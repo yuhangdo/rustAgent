@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yuhangdo.rustagent.data.repository.SettingsRepository
+import com.yuhangdo.rustagent.model.FakeProviderScenario
 import com.yuhangdo.rustagent.model.ProviderSettings
 import com.yuhangdo.rustagent.model.ProviderType
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +39,7 @@ data class SettingsUiState(
 
 sealed interface SettingsAction {
     data class ProviderTypeChanged(val providerType: ProviderType) : SettingsAction
+    data class FakeScenarioChanged(val scenario: FakeProviderScenario) : SettingsAction
     data class BaseUrlChanged(val value: String) : SettingsAction
     data class ApiKeyChanged(val value: String) : SettingsAction
     data class ModelChanged(val value: String) : SettingsAction
@@ -64,7 +66,7 @@ class SettingsViewModel(
         )
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
+        started = SharingStarted.Eagerly,
         initialValue = SettingsUiState(),
     )
 
@@ -81,18 +83,27 @@ class SettingsViewModel(
             is SettingsAction.ProviderTypeChanged -> {
                 draftSettings.value = draftSettings.value.copy(providerType = action.providerType)
             }
+
+            is SettingsAction.FakeScenarioChanged -> {
+                draftSettings.value = draftSettings.value.copy(fakeScenario = action.scenario)
+            }
+
             is SettingsAction.BaseUrlChanged -> {
                 draftSettings.value = draftSettings.value.copy(baseUrl = action.value)
             }
+
             is SettingsAction.ApiKeyChanged -> {
                 draftSettings.value = draftSettings.value.copy(apiKey = action.value)
             }
+
             is SettingsAction.ModelChanged -> {
                 draftSettings.value = draftSettings.value.copy(model = action.value)
             }
+
             is SettingsAction.SystemPromptChanged -> {
                 draftSettings.value = draftSettings.value.copy(systemPrompt = action.value)
             }
+
             SettingsAction.SaveClicked -> save()
         }
     }
@@ -101,7 +112,7 @@ class SettingsViewModel(
         viewModelScope.launch {
             isSaving.value = true
             settingsRepository.updateSettings(draftSettings.value)
-            bannerMessage.value = "Provider settings saved."
+            bannerMessage.value = "Provider profile saved."
             isSaving.value = false
         }
     }
@@ -126,7 +137,7 @@ fun SettingsScreen(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "Switch fake and real providers without changing the MVI or UI layers.",
+                text = "Switch providers, tune prompt context, and choose fake scenarios that stress the run console.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -152,6 +163,46 @@ fun SettingsScreen(
                 } else {
                     OutlinedButton(onClick = { onAction(SettingsAction.ProviderTypeChanged(providerType)) }) {
                         Text(providerType.displayName)
+                    }
+                }
+            }
+        }
+
+        if (uiState.settings.providerType == ProviderType.FAKE) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Text(
+                        text = "Fake Provider Scenario",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = uiState.settings.fakeScenario.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FakeProviderScenario.entries.forEach { scenario ->
+                            val selected = scenario == uiState.settings.fakeScenario
+                            if (selected) {
+                                Button(
+                                    onClick = { onAction(SettingsAction.FakeScenarioChanged(scenario)) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(scenario.displayName)
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { onAction(SettingsAction.FakeScenarioChanged(scenario)) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Text(scenario.displayName)
+                                }
+                            }
+                        }
                     }
                 }
             }

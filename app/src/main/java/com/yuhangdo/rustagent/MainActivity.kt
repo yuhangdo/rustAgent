@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -55,6 +56,7 @@ private enum class TopLevelDestination(
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 private fun RustAgentAppContent() {
     val context = LocalContext.current
     val factory = remember(context) {

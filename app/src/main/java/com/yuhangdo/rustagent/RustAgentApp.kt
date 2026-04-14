@@ -8,6 +8,7 @@ import com.yuhangdo.rustagent.data.local.AppDatabase
 import com.yuhangdo.rustagent.data.provider.ChatProviderFactory
 import com.yuhangdo.rustagent.data.provider.ChatProviderResolver
 import com.yuhangdo.rustagent.data.repository.ChatRepository
+import com.yuhangdo.rustagent.data.repository.RunRepository
 import com.yuhangdo.rustagent.data.repository.SelectedSessionRepository
 import com.yuhangdo.rustagent.data.repository.SessionRepository
 import com.yuhangdo.rustagent.data.repository.SettingsRepository
@@ -38,12 +39,17 @@ class AppContainer(
         chatMessageDao = database.chatMessageDao(),
         sessionRepository = sessionRepository,
     )
+    private val runRepository = RunRepository(
+        agentRunDao = database.agentRunDao(),
+        runEventDao = database.runEventDao(),
+    )
     private val providerResolver: ChatProviderResolver = ChatProviderFactory(
         okHttpClient = OkHttpClient.Builder().build(),
     )
 
     val viewModelFactory: ViewModelProvider.Factory = RustAgentViewModelFactory(
         chatRepository = chatRepository,
+        runRepository = runRepository,
         sessionRepository = sessionRepository,
         settingsRepository = settingsRepository,
         selectedSessionRepository = selectedSessionRepository,
@@ -53,6 +59,7 @@ class AppContainer(
 
 class RustAgentViewModelFactory(
     private val chatRepository: ChatRepository,
+    private val runRepository: RunRepository,
     private val sessionRepository: SessionRepository,
     private val settingsRepository: SettingsRepository,
     private val selectedSessionRepository: SelectedSessionRepository,
@@ -63,6 +70,7 @@ class RustAgentViewModelFactory(
         modelClass.isAssignableFrom(ChatViewModel::class.java) -> {
             ChatViewModel(
                 chatRepository = chatRepository,
+                runRepository = runRepository,
                 sessionRepository = sessionRepository,
                 settingsRepository = settingsRepository,
                 selectedSessionRepository = selectedSessionRepository,
@@ -73,6 +81,7 @@ class RustAgentViewModelFactory(
         modelClass.isAssignableFrom(SessionsViewModel::class.java) -> {
             SessionsViewModel(
                 sessionRepository = sessionRepository,
+                runRepository = runRepository,
                 selectedSessionRepository = selectedSessionRepository,
             ) as T
         }

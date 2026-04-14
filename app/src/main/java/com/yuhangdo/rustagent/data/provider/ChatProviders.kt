@@ -1,6 +1,7 @@
 package com.yuhangdo.rustagent.data.provider
 
 import com.yuhangdo.rustagent.model.ChatMessage
+import com.yuhangdo.rustagent.model.FakeProviderScenario
 import com.yuhangdo.rustagent.model.MessageRole
 import com.yuhangdo.rustagent.model.ProviderChunk
 import com.yuhangdo.rustagent.model.ProviderRequest
@@ -41,27 +42,64 @@ class ChatProviderFactory(
 class FakeChatProvider : ChatProvider {
     override fun streamReply(request: ProviderRequest): Flow<ProviderChunk> = flow {
         val latestPrompt = request.history.lastOrNull { it.role == MessageRole.USER }?.answerContent.orEmpty()
-        val reasoning = buildString {
-            append("Routing request through the fake provider. ")
-            append("It keeps reasoningContent and answerContent separate for UI and persistence tests. ")
-            if (latestPrompt.isNotBlank()) {
-                append("Latest prompt: ")
-                append(latestPrompt.take(64))
-                append(".")
+        when (request.settings.fakeScenario) {
+            FakeProviderScenario.SUCCESS_WITH_REASONING -> {
+                val reasoning = buildString {
+                    append("Routing request through the fake provider. ")
+                    append("This run includes both reasoning and final answer output for console testing. ")
+                    if (latestPrompt.isNotBlank()) {
+                        append("Latest prompt: ")
+                        append(latestPrompt.take(64))
+                        append(".")
+                    }
+                }
+                val answer = buildString {
+                    append("Fake provider completed successfully. ")
+                    append("Use this mode to verify the run timeline, reasoning summary, and final answer rendering. ")
+                    if (latestPrompt.isNotBlank()) {
+                        append("Prompt summary: ")
+                        append(latestPrompt.take(96))
+                    }
+                }
+                emit(ProviderChunk(reasoningDelta = reasoning))
+                delay(180)
+                emit(ProviderChunk(answerDelta = answer))
             }
-        }
-        val answer = buildString {
-            append("This is a fake answer stream. ")
-            append("Swap the provider to OpenAI-compatible in Settings when real credentials are ready. ")
-            if (latestPrompt.isNotBlank()) {
-                append("Prompt summary: ")
-                append(latestPrompt.take(96))
-            }
-        }
 
-        emit(ProviderChunk(reasoningDelta = reasoning))
-        delay(180)
-        emit(ProviderChunk(answerDelta = answer))
+            FakeProviderScenario.SUCCESS_ANSWER_ONLY -> {
+                val answer = buildString {
+                    append("Fake provider returned a final answer without reasoning output. ")
+                    if (latestPrompt.isNotBlank()) {
+                        append("Prompt summary: ")
+                        append(latestPrompt.take(96))
+                    }
+                }
+                emit(ProviderChunk(answerDelta = answer))
+            }
+
+            FakeProviderScenario.EMPTY_RESPONSE -> {
+                delay(120)
+            }
+
+            FakeProviderScenario.DELAYED_SUCCESS -> {
+                emit(
+                    ProviderChunk(
+                        reasoningDelta = "Fake provider is intentionally delayed. This helps validate long-running run states.",
+                    ),
+                )
+                delay(1_300)
+                emit(
+                    ProviderChunk(
+                        answerDelta = "Delayed fake provider completed successfully after a synthetic wait.",
+                    ),
+                )
+            }
+
+            FakeProviderScenario.PROVIDER_ERROR -> {
+                delay(100)
+                throw IOException("Synthetic fake-provider failure for console diagnostics.")
+            }
+        }
     }
 }
 
@@ -129,14 +167,7 @@ class OpenAiCompatibleChatProvider(
         }
     }
 
-    private fun ChatMessage.asProviderContent(): String = buildString {
-        if (reasoningContent.isNotBlank()) {
-            append("Reasoning:\n")
-            append(reasoningContent.trim())
-            append("\n\n")
-        }
-        append(answerContent.trim())
-    }.trim()
+    private fun ChatMessage.asProviderContent(): String = answerContent.trim()
 
     private fun JSONObject.firstNonBlank(vararg keys: String): String {
         keys.forEach { key ->

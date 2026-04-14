@@ -5,6 +5,10 @@ import com.yuhangdo.rustagent.data.local.AppSettingsEntity
 import com.yuhangdo.rustagent.data.local.ChatMessageDao
 import com.yuhangdo.rustagent.data.local.ChatMessageEntity
 import com.yuhangdo.rustagent.data.local.ConversationSessionEntity
+import com.yuhangdo.rustagent.data.local.AgentRunDao
+import com.yuhangdo.rustagent.data.local.AgentRunEntity
+import com.yuhangdo.rustagent.data.local.RunEventDao
+import com.yuhangdo.rustagent.data.local.RunEventEntity
 import com.yuhangdo.rustagent.data.local.SessionDao
 import com.yuhangdo.rustagent.data.provider.ChatProvider
 import com.yuhangdo.rustagent.data.provider.ChatProviderResolver
@@ -70,6 +74,51 @@ class FakeAppSettingsDao(
 
     override suspend fun upsert(settings: AppSettingsEntity) {
         this.settings.value = settings
+    }
+}
+
+class FakeAgentRunDao : AgentRunDao {
+    private val runs = MutableStateFlow<List<AgentRunEntity>>(emptyList())
+
+    override fun observeAllRuns(): Flow<List<AgentRunEntity>> = runs.map { all ->
+        all.sortedByDescending { it.startedAt }
+    }
+
+    override fun observeRunsForSession(sessionId: String): Flow<List<AgentRunEntity>> = runs.map { all ->
+        all.filter { it.sessionId == sessionId }.sortedByDescending { it.startedAt }
+    }
+
+    override fun observeRun(runId: String): Flow<AgentRunEntity?> = runs.map { all ->
+        all.firstOrNull { it.id == runId }
+    }
+
+    override suspend fun getById(runId: String): AgentRunEntity? = runs.value.firstOrNull { it.id == runId }
+
+    override suspend fun upsert(run: AgentRunEntity) {
+        runs.value = runs.value
+            .filterNot { it.id == run.id }
+            .plus(run)
+            .sortedByDescending { it.startedAt }
+    }
+}
+
+class FakeRunEventDao : RunEventDao {
+    private val events = MutableStateFlow<List<RunEventEntity>>(emptyList())
+
+    override fun observeEventsForRun(runId: String): Flow<List<RunEventEntity>> = events.map { all ->
+        all.filter { it.runId == runId }.sortedWith(compareBy<RunEventEntity> { it.orderIndex }.thenBy { it.createdAt })
+    }
+
+    override suspend fun getEventsForRun(runId: String): List<RunEventEntity> =
+        events.value.filter { it.runId == runId }.sortedWith(compareBy<RunEventEntity> { it.orderIndex }.thenBy { it.createdAt })
+
+    override suspend fun countForRun(runId: String): Int = events.value.count { it.runId == runId }
+
+    override suspend fun upsert(event: RunEventEntity) {
+        events.value = events.value
+            .filterNot { it.id == event.id }
+            .plus(event)
+            .sortedWith(compareBy<RunEventEntity> { it.runId }.thenBy { it.orderIndex }.thenBy { it.createdAt })
     }
 }
 

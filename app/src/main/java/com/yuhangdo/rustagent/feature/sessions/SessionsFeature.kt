@@ -20,8 +20,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.yuhangdo.rustagent.data.repository.RunRepository
 import com.yuhangdo.rustagent.data.repository.SelectedSessionRepository
 import com.yuhangdo.rustagent.data.repository.SessionRepository
+import com.yuhangdo.rustagent.model.AgentRun
+import com.yuhangdo.rustagent.model.AgentRunStatus
 import com.yuhangdo.rustagent.model.ChatSession
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -29,9 +32,17 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+data class SessionRunSummaryUiState(
+    val status: AgentRunStatus,
+    val durationMs: Long?,
+    val model: String,
+    val errorSummary: String?,
+)
+
 data class SessionsUiState(
     val sessions: List<ChatSession> = emptyList(),
     val selectedSessionId: String? = null,
+    val runSummaryBySessionId: Map<String, SessionRunSummaryUiState> = emptyMap(),
 )
 
 sealed interface SessionsAction {
@@ -42,19 +53,22 @@ sealed interface SessionsAction {
 
 class SessionsViewModel(
     private val sessionRepository: SessionRepository,
+    private val runRepository: RunRepository,
     private val selectedSessionRepository: SelectedSessionRepository,
 ) : ViewModel() {
     val uiState: StateFlow<SessionsUiState> = combine(
         sessionRepository.observeSessions(),
         selectedSessionRepository.observeSelectedSessionId(),
-    ) { sessions, selectedSessionId ->
+        runRepository.observeAllRuns(),
+    ) { sessions, selectedSessionId, runs ->
         SessionsUiState(
             sessions = sessions,
             selectedSessionId = selectedSessionId,
+            runSummaryBySessionId = runs.toLatestRunSummaries(),
         )
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
+        started = SharingStarted.Eagerly,
         initialValue = SessionsUiState(),
     )
 
@@ -90,6 +104,22 @@ class SessionsViewModel(
     }
 }
 
+private fun List<AgentRun>.toLatestRunSummaries(): Map<String, SessionRunSummaryUiState> {
+    val summaries = linkedMapOf<String, SessionRunSummaryUiState>()
+    for (run in this) {
+        if (summaries.containsKey(run.sessionId)) {
+            continue
+        }
+        summaries[run.sessionId] = SessionRunSummaryUiState(
+            status = run.status,
+            durationMs = run.durationMs,
+            model = run.model,
+            errorSummary = run.errorSummary,
+        )
+    }
+    return summaries
+}
+
 @Composable
 fun SessionsScreen(
     uiState: SessionsUiState,
@@ -115,7 +145,7 @@ fun SessionsScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "Switch conversations, review previews, or open a fresh thread.",
+                    text = "Switch conversations and inspect the latest run health for each thread.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -141,6 +171,7 @@ fun SessionsScreen(
                 ) { session ->
                     SessionCard(
                         session = session,
+                        runSummary = uiState.runSummaryBySessionId[session.id],
                         isSelected = session.id == uiState.selectedSessionId,
                         onSelect = {
                             onAction(SessionsAction.SessionSelected(session.id))
@@ -157,6 +188,7 @@ fun SessionsScreen(
 @Composable
 private fun SessionCard(
     session: ChatSession,
+    runSummary: SessionRunSummaryUiState?,
     isSelected: Boolean,
     onSelect: () -> Unit,
     onDelete: () -> Unit,
@@ -195,6 +227,31 @@ private fun SessionCard(
                 text = "${session.messageCount} messages",
                 style = MaterialTheme.typography.labelMedium,
             )
+
+            if (runSummary != null) {
+                val durationLabel = runSummary.durationMs?.let { " | ${it}ms" }.orEmpty()
+                Text(
+                    text = "Last run: ${runSummary.status.displayName}$durationLabel",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = when (runSummary.status) {
+                        AgentRunStatus.FAILED -> MaterialTheme.colorScheme.error
+                        AgentRunStatus.RUNNING -> MaterialTheme.colorScheme.primary
+                        AgentRunStatus.COMPLETED -> MaterialTheme.colorScheme.primary
+                    },
+                )
+                Text(
+                    text = "Model: ${runSummary.model}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (runSummary.errorSummary != null) {
+                    Text(
+                        text = runSummary.errorSummary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onSelect) {

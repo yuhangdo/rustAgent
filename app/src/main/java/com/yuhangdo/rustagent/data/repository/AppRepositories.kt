@@ -86,6 +86,23 @@ class ChatRepository(
         it.asDomain()
     }
 
+    suspend fun getMessageById(messageId: String): ChatMessage? = chatMessageDao.getMessageById(messageId)?.asDomain()
+
+    suspend fun getHistoryThroughMessage(
+        sessionId: String,
+        messageId: String,
+    ): List<ChatMessage> {
+        val messages = getMessages(sessionId)
+        val history = mutableListOf<ChatMessage>()
+        for (message in messages) {
+            history += message
+            if (message.id == messageId) {
+                break
+            }
+        }
+        return history
+    }
+
     suspend fun addUserMessage(
         sessionId: String,
         content: String,

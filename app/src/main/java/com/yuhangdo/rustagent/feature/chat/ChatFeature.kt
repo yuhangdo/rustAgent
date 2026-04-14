@@ -2,14 +2,15 @@ package com.yuhangdo.rustagent.feature.chat
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -21,25 +22,38 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yuhangdo.rustagent.data.provider.ChatProviderResolver
 import com.yuhangdo.rustagent.data.repository.ChatRepository
+import com.yuhangdo.rustagent.data.repository.RunRepository
 import com.yuhangdo.rustagent.data.repository.SelectedSessionRepository
 import com.yuhangdo.rustagent.data.repository.SessionRepository
 import com.yuhangdo.rustagent.data.repository.SettingsRepository
+import com.yuhangdo.rustagent.model.AgentRun
+import com.yuhangdo.rustagent.model.AgentRunStatus
 import com.yuhangdo.rustagent.model.ChatMessage
 import com.yuhangdo.rustagent.model.MessageRole
 import com.yuhangdo.rustagent.model.ProviderRequest
+import com.yuhangdo.rustagent.model.ProviderSettings
 import com.yuhangdo.rustagent.model.ProviderType
+import com.yuhangdo.rustagent.model.RunEvent
+import com.yuhangdo.rustagent.model.RunEventType
 import com.yuhangdo.rustagent.model.suggestedSessionTitle
+import com.yuhangdo.rustagent.model.summarizeReasoning
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -49,6 +63,19 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+data class MessageRunSummaryUiState(
+    val runId: String,
+    val status: AgentRunStatus,
+    val durationMs: Long?,
+    val errorSummary: String?,
+    val providerLabel: String,
+)
+
+data class RunInspectorUiState(
+    val run: AgentRun,
+    val events: List<RunEvent>,
+)
+
 data class ChatUiState(
     val sessionId: String? = null,
     val sessionTitle: String = "New Chat",
@@ -57,16 +84,23 @@ data class ChatUiState(
     val isSending: Boolean = false,
     val providerType: ProviderType = ProviderType.FAKE,
     val errorMessage: String? = null,
+    val runSummariesByAssistantMessageId: Map<String, MessageRunSummaryUiState> = emptyMap(),
+    val selectedRun: RunInspectorUiState? = null,
+    val activeRunCount: Int = 0,
 )
 
 sealed interface ChatAction {
     data class DraftChanged(val value: String) : ChatAction
     data object SendClicked : ChatAction
     data object ErrorDismissed : ChatAction
+    data class RunSelected(val runId: String) : ChatAction
+    data object RunInspectorDismissed : ChatAction
+    data class RetryRunClicked(val runId: String) : ChatAction
 }
 
 class ChatViewModel(
     private val chatRepository: ChatRepository,
+    private val runRepository: RunRepository,
     private val sessionRepository: SessionRepository,
     private val settingsRepository: SettingsRepository,
     private val selectedSessionRepository: SelectedSessionRepository,
@@ -75,40 +109,97 @@ class ChatViewModel(
     private val draftMessage = MutableStateFlow("")
     private val isSending = MutableStateFlow(false)
     private val errorMessage = MutableStateFlow<String?>(null)
+    private val selectedRunId = MutableStateFlow<String?>(null)
 
     private val selectedSessionId = selectedSessionRepository.observeSelectedSessionId()
     private val sessions = sessionRepository.observeSessions()
     private val messages = selectedSessionId.flatMapLatest { sessionId ->
         if (sessionId == null) {
-            flowOf(emptyList<ChatMessage>())
+            flowOf(emptyList())
         } else {
             chatRepository.observeMessages(sessionId)
         }
     }
-
-    val uiState: StateFlow<ChatUiState> = combine(
+    private val runs = selectedSessionId.flatMapLatest { sessionId ->
+        if (sessionId == null) {
+            flowOf(emptyList())
+        } else {
+            runRepository.observeRunsForSession(sessionId)
+        }
+    }
+    private val selectedRun = selectedRunId.flatMapLatest { runId ->
+        if (runId == null) {
+            flowOf(null)
+        } else {
+            combine(
+                runRepository.observeRun(runId),
+                runRepository.observeEventsForRun(runId),
+            ) { run, events ->
+                run?.let {
+                    RunInspectorUiState(
+                        run = it,
+                        events = events,
+                    )
+                }
+            }
+        }
+    }
+    private val chatContext = combine(
         selectedSessionId,
         sessions,
         messages,
+        runs,
         settingsRepository.observeSettings(),
+    ) { selectedId, sessionList, messageList, runList, settings ->
+        ChatContext(
+            selectedId = selectedId,
+            sessionList = sessionList,
+            messageList = messageList,
+            runList = runList,
+            settings = settings,
+        )
+    }
+
+    val uiState: StateFlow<ChatUiState> = combine(
+        chatContext,
         draftMessage,
         isSending,
         errorMessage,
-    ) { selectedId, sessionList, messageList, settings, draft, sending, error ->
-        val activeSession = sessionList.find { it.id == selectedId }
+        selectedRun,
+    ) { context, draft, sending, error, selectedRunValue ->
+        val activeSession = context.sessionList.find { it.id == context.selectedId }
         ChatUiState(
-            sessionId = selectedId,
+            sessionId = context.selectedId,
             sessionTitle = activeSession?.title ?: "New Chat",
-            messages = messageList,
+            messages = context.messageList,
             draftMessage = draft,
             isSending = sending,
-            providerType = settings.providerType,
+            providerType = context.settings.providerType,
             errorMessage = error,
+            runSummariesByAssistantMessageId = context.runList.associate { run ->
+                run.assistantMessageId to MessageRunSummaryUiState(
+                    runId = run.id,
+                    status = run.status,
+                    durationMs = run.durationMs,
+                    errorSummary = run.errorSummary,
+                    providerLabel = "${run.providerType.displayName} | ${run.model}",
+                )
+            },
+            selectedRun = selectedRunValue,
+            activeRunCount = context.runList.count { it.status == AgentRunStatus.RUNNING },
         )
     }.stateIn(
         scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
+        started = SharingStarted.Eagerly,
         initialValue = ChatUiState(),
+    )
+
+    private data class ChatContext(
+        val selectedId: String?,
+        val sessionList: List<com.yuhangdo.rustagent.model.ChatSession>,
+        val messageList: List<ChatMessage>,
+        val runList: List<AgentRun>,
+        val settings: ProviderSettings,
     )
 
     fun onAction(action: ChatAction) {
@@ -116,6 +207,9 @@ class ChatViewModel(
             is ChatAction.DraftChanged -> draftMessage.value = action.value
             ChatAction.SendClicked -> sendMessage()
             ChatAction.ErrorDismissed -> errorMessage.value = null
+            is ChatAction.RunSelected -> selectedRunId.value = action.runId
+            ChatAction.RunInspectorDismissed -> selectedRunId.value = null
+            is ChatAction.RetryRunClicked -> retryRun(action.runId)
         }
     }
 
@@ -130,54 +224,166 @@ class ChatViewModel(
             isSending.value = true
             errorMessage.value = null
 
-            val sessionId = selectedSessionRepository.currentSelectedSessionId()
-                ?: sessionRepository.createSession(suggestedSessionTitle(messageContent)).also {
-                    selectedSessionRepository.selectSession(it)
-                }
-
-            chatRepository.addUserMessage(sessionId, messageContent)
-            val history = chatRepository.getMessages(sessionId)
-            val assistantMessageId = chatRepository.createAssistantPlaceholder(sessionId)
-            val settings = settingsRepository.getSettings()
-            val provider = providerResolver.resolve(settings)
-
-            var accumulatedReasoning = ""
-            var accumulatedAnswer = ""
-
             try {
-                provider.streamReply(
-                    ProviderRequest(
-                        history = history,
-                        settings = settings,
-                    ),
-                ).collect { chunk ->
-                    accumulatedReasoning += chunk.reasoningDelta
-                    accumulatedAnswer += chunk.answerDelta
-                    chatRepository.updateAssistantMessage(
-                        messageId = assistantMessageId,
-                        reasoningContent = accumulatedReasoning,
-                        answerContent = accumulatedAnswer,
-                    )
-                }
+                val sessionId = selectedSessionRepository.currentSelectedSessionId()
+                    ?: sessionRepository.createSession(suggestedSessionTitle(messageContent)).also {
+                        selectedSessionRepository.selectSession(it)
+                    }
 
-                if (accumulatedReasoning.isBlank() && accumulatedAnswer.isBlank()) {
-                    chatRepository.updateAssistantMessage(
-                        messageId = assistantMessageId,
-                        reasoningContent = "",
-                        answerContent = "Provider returned an empty response.",
-                    )
-                }
-            } catch (throwable: Throwable) {
-                val providerError = throwable.message ?: "Unknown provider error."
-                errorMessage.value = providerError
-                chatRepository.updateAssistantMessage(
-                    messageId = assistantMessageId,
-                    reasoningContent = accumulatedReasoning,
-                    answerContent = accumulatedAnswer.ifBlank { "Provider error: $providerError" },
+                val userMessage = chatRepository.addUserMessage(sessionId, messageContent)
+                val history = chatRepository.getMessages(sessionId)
+                val assistantMessageId = chatRepository.createAssistantPlaceholder(sessionId)
+                val settings = settingsRepository.getSettings()
+
+                executeRun(
+                    sessionId = sessionId,
+                    userMessage = userMessage,
+                    assistantMessageId = assistantMessageId,
+                    history = history,
+                    settings = settings,
+                    triggerLabel = "User message submitted.",
                 )
             } finally {
                 isSending.value = false
             }
+        }
+    }
+
+    private fun retryRun(runId: String) {
+        if (isSending.value) {
+            return
+        }
+
+        viewModelScope.launch {
+            isSending.value = true
+            errorMessage.value = null
+
+            try {
+                val originalRun = runRepository.getRun(runId)
+                val originalUserMessage = originalRun?.let { chatRepository.getMessageById(it.userMessageId) }
+                if (originalRun == null || originalUserMessage == null) {
+                    errorMessage.value = "The original run could not be loaded for retry."
+                    return@launch
+                }
+
+                selectedSessionRepository.selectSession(originalRun.sessionId)
+                val assistantMessageId = chatRepository.createAssistantPlaceholder(originalRun.sessionId)
+                val history = chatRepository.getHistoryThroughMessage(
+                    sessionId = originalRun.sessionId,
+                    messageId = originalRun.userMessageId,
+                )
+                val settings = settingsRepository.getSettings()
+
+                executeRun(
+                    sessionId = originalRun.sessionId,
+                    userMessage = originalUserMessage,
+                    assistantMessageId = assistantMessageId,
+                    history = history,
+                    settings = settings,
+                    triggerLabel = "Retry requested from an existing run.",
+                )
+            } finally {
+                isSending.value = false
+            }
+        }
+    }
+
+    private suspend fun executeRun(
+        sessionId: String,
+        userMessage: ChatMessage,
+        assistantMessageId: String,
+        history: List<ChatMessage>,
+        settings: ProviderSettings,
+        triggerLabel: String,
+    ) {
+        val provider = providerResolver.resolve(settings)
+        val run = runRepository.createRun(
+            sessionId = sessionId,
+            userMessageId = userMessage.id,
+            assistantMessageId = assistantMessageId,
+            settings = settings,
+        )
+
+        runRepository.appendEvent(
+            runId = run.id,
+            type = RunEventType.STARTED,
+            details = triggerLabel,
+        )
+        runRepository.appendEvent(
+            runId = run.id,
+            type = RunEventType.REQUEST_BUILT,
+            details = "Built prompt context from ${history.size} transcript messages.",
+        )
+        runRepository.appendEvent(
+            runId = run.id,
+            type = RunEventType.PROVIDER_SELECTED,
+            details = "${settings.providerType.displayName} | ${settings.model}",
+        )
+
+        var accumulatedReasoning = ""
+        var accumulatedAnswer = ""
+
+        try {
+            provider.streamReply(
+                ProviderRequest(
+                    history = history,
+                    settings = settings,
+                ),
+            ).collect { chunk ->
+                accumulatedReasoning += chunk.reasoningDelta
+                accumulatedAnswer += chunk.answerDelta
+
+                chatRepository.updateAssistantMessage(
+                    messageId = assistantMessageId,
+                    reasoningContent = summarizeReasoning(accumulatedReasoning),
+                    answerContent = accumulatedAnswer,
+                )
+            }
+
+            if (accumulatedReasoning.isBlank() && accumulatedAnswer.isBlank()) {
+                accumulatedAnswer = "Provider returned an empty response."
+                chatRepository.updateAssistantMessage(
+                    messageId = assistantMessageId,
+                    reasoningContent = "",
+                    answerContent = accumulatedAnswer,
+                )
+            }
+
+            if (accumulatedReasoning.isNotBlank()) {
+                runRepository.appendEvent(
+                    runId = run.id,
+                    type = RunEventType.REASONING_SUMMARY,
+                    details = summarizeReasoning(accumulatedReasoning, maxChars = 400),
+                )
+            }
+
+            runRepository.appendEvent(
+                runId = run.id,
+                type = RunEventType.ANSWER_RECEIVED,
+                details = accumulatedAnswer.takeIf { it.isNotBlank() }?.take(400)
+                    ?: "Assistant message updated with an empty-response placeholder.",
+            )
+
+            val completedRun = runRepository.markCompleted(run.id)
+            runRepository.appendEvent(
+                runId = run.id,
+                type = RunEventType.COMPLETED,
+                details = completedRun?.durationMs?.let { "Completed in ${it}ms." } ?: "Completed.",
+            )
+        } catch (throwable: Throwable) {
+            val providerError = throwable.message ?: "Unknown provider error."
+            errorMessage.value = providerError
+            chatRepository.updateAssistantMessage(
+                messageId = assistantMessageId,
+                reasoningContent = summarizeReasoning(accumulatedReasoning),
+                answerContent = accumulatedAnswer.ifBlank { "Provider error: $providerError" },
+            )
+            runRepository.markFailed(run.id, providerError)
+            runRepository.appendEvent(
+                runId = run.id,
+                type = RunEventType.FAILED,
+                details = providerError,
+            )
         }
     }
 }
@@ -219,30 +425,51 @@ fun ChatScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
                     Text(
                         text = uiState.sessionTitle,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "reasoningContent + answerContent stay separated in storage and UI.",
+                        text = if (uiState.activeRunCount > 0) {
+                            "${uiState.activeRunCount} run(s) active. Transcript and runtime traces are stored separately."
+                        } else {
+                            "Transcript and runtime traces are stored separately for debugging."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                AssistChip(
-                    onClick = { },
-                    label = { Text(uiState.providerType.displayName) },
-                )
+                Column(
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    AssistChip(
+                        onClick = { },
+                        label = { Text(uiState.providerType.displayName) },
+                    )
+                    if (uiState.activeRunCount > 0) {
+                        AssistChip(
+                            onClick = { },
+                            label = { Text("Running") },
+                        )
+                    }
+                }
             }
 
             if (uiState.errorMessage != null) {
-                Text(
-                    text = uiState.errorMessage,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = uiState.errorMessage,
+                        modifier = Modifier.padding(14.dp),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
             }
 
             if (uiState.messages.isEmpty()) {
@@ -252,12 +479,12 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(
-                            text = "Start a runnable Android session",
+                            text = "Run and inspect agent sessions",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.SemiBold,
                         )
                         Text(
-                            text = "Messages persist in Room. Assistant replies keep reasoning and final answer split into two fields.",
+                            text = "Each reply now carries a linked run record, event timeline, and retry path so you can debug providers like an operator instead of just reading chat bubbles.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -273,7 +500,11 @@ fun ChatScreen(
                         items = uiState.messages,
                         key = { message -> message.id },
                     ) { message ->
-                        MessageCard(message)
+                        MessageCard(
+                            message = message,
+                            runSummary = uiState.runSummariesByAssistantMessageId[message.id],
+                            onViewRun = { runId -> onAction(ChatAction.RunSelected(runId)) },
+                        )
                     }
                 }
             }
@@ -285,7 +516,7 @@ fun ChatScreen(
                 minLines = 3,
                 maxLines = 5,
                 label = { Text("Ask the agent") },
-                placeholder = { Text("Describe the Android task, bug, or provider behavior...") },
+                placeholder = { Text("Describe the bug, provider issue, or debugging task...") },
             )
 
             Row(
@@ -309,36 +540,84 @@ fun ChatScreen(
             }
         }
     }
+
+    uiState.selectedRun?.let { selectedRun ->
+        RunInspectorDialog(
+            selectedRun = selectedRun,
+            onDismiss = { onAction(ChatAction.RunInspectorDismissed) },
+            onRetry = { onAction(ChatAction.RetryRunClicked(selectedRun.run.id)) },
+        )
+    }
 }
 
 @Composable
-private fun MessageCard(message: ChatMessage) {
+private fun MessageCard(
+    message: ChatMessage,
+    runSummary: MessageRunSummaryUiState?,
+    onViewRun: (String) -> Unit,
+) {
     val roleLabel = when (message.role) {
         MessageRole.USER -> "You"
         MessageRole.ASSISTANT -> "Agent"
         MessageRole.SYSTEM -> "System"
     }
+    var showReasoning by rememberSaveable(message.id) { mutableStateOf(false) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                text = roleLabel,
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = roleLabel,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (runSummary != null) {
+                    AssistChip(
+                        onClick = { onViewRun(runSummary.runId) },
+                        label = {
+                            Text(
+                                text = runSummary.durationMs?.let {
+                                    "${runSummary.status.displayName} | ${it}ms"
+                                } ?: runSummary.status.displayName,
+                            )
+                        },
+                    )
+                }
+            }
+
+            if (runSummary != null) {
+                Text(
+                    text = runSummary.providerLabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (message.reasoningContent.isNotBlank()) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Reasoning Summary",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                        )
+                        TextButton(onClick = { showReasoning = !showReasoning }) {
+                            Text(if (showReasoning) "Collapse" else "Expand")
+                        }
+                    }
                     Text(
-                        text = "Reasoning",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        text = message.reasoningContent,
+                        text = if (showReasoning) message.reasoningContent else summarizeReasoning(message.reasoningContent, 120),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -365,6 +644,136 @@ private fun MessageCard(message: ChatMessage) {
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            if (runSummary != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = { onViewRun(runSummary.runId) }) {
+                        Text("View Run")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunInspectorDialog(
+    selectedRun: RunInspectorUiState,
+    onDismiss: () -> Unit,
+    onRetry: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            tonalElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.9f),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Run Inspector",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+
+                Text(
+                    text = "${selectedRun.run.providerType.displayName} | ${selectedRun.run.model}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AssistChip(
+                        onClick = { },
+                        label = { Text(selectedRun.run.status.displayName) },
+                    )
+                    selectedRun.run.durationMs?.let { duration ->
+                        AssistChip(
+                            onClick = { },
+                            label = { Text("${duration}ms") },
+                        )
+                    }
+                }
+
+                if (selectedRun.run.errorSummary != null) {
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            text = selectedRun.run.errorSummary,
+                            modifier = Modifier.padding(14.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Timeline",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+
+                if (selectedRun.events.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "No events recorded for this run yet.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(
+                            items = selectedRun.events,
+                            key = { event -> event.id },
+                        ) { event ->
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    Text(
+                                        text = event.title,
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        text = event.details,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("Close")
+                    }
+                    Button(onClick = onRetry) {
+                        Text("Retry Run")
+                    }
+                }
             }
         }
     }

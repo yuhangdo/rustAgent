@@ -1,8 +1,11 @@
 package com.yuhangdo.rustagent.feature.sessions
 
 import com.google.common.truth.Truth.assertThat
+import com.yuhangdo.rustagent.FakeAgentRunDao
+import com.yuhangdo.rustagent.FakeRunEventDao
 import com.yuhangdo.rustagent.FakeSessionDao
 import com.yuhangdo.rustagent.MainDispatcherRule
+import com.yuhangdo.rustagent.data.repository.RunRepository
 import com.yuhangdo.rustagent.data.repository.SelectedSessionRepository
 import com.yuhangdo.rustagent.data.repository.SessionRepository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -21,6 +24,7 @@ class SessionsViewModelTest {
         val selectedSessionRepository = SelectedSessionRepository()
         val viewModel = SessionsViewModel(
             sessionRepository = SessionRepository(FakeSessionDao()),
+            runRepository = RunRepository(FakeAgentRunDao(), FakeRunEventDao()),
             selectedSessionRepository = selectedSessionRepository,
         )
 
