@@ -10,15 +10,18 @@ import com.yuhangdo.rustagent.data.local.AgentRunEntity
 import com.yuhangdo.rustagent.data.local.RunEventDao
 import com.yuhangdo.rustagent.data.local.RunEventEntity
 import com.yuhangdo.rustagent.data.local.SessionDao
-import com.yuhangdo.rustagent.data.provider.ChatProvider
-import com.yuhangdo.rustagent.data.provider.ChatProviderResolver
-import com.yuhangdo.rustagent.model.ProviderChunk
-import com.yuhangdo.rustagent.model.ProviderRequest
+import com.yuhangdo.rustagent.data.runtime.AgentRuntime
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeEvent
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeRequest
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeResolver
 import com.yuhangdo.rustagent.model.ProviderSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import com.yuhangdo.rustagent.model.RunEventType
 
 class FakeSessionDao : SessionDao {
     private val sessions = MutableStateFlow<List<ConversationSessionEntity>>(emptyList())
@@ -33,6 +36,25 @@ class FakeSessionDao : SessionDao {
             .filterNot { it.id == session.id }
             .plus(session)
             .sortedByDescending { it.updatedAt }
+    }
+
+    override suspend fun updateMetadata(
+        sessionId: String,
+        updatedAt: Long,
+        lastPreview: String,
+        messageCount: Int,
+    ) {
+        sessions.value = sessions.value.map { session ->
+            if (session.id == sessionId) {
+                session.copy(
+                    updatedAt = updatedAt,
+                    lastPreview = lastPreview,
+                    messageCount = messageCount,
+                )
+            } else {
+                session
+            }
+        }.sortedByDescending { it.updatedAt }
     }
 
     override suspend fun deleteById(sessionId: String) {
@@ -122,19 +144,50 @@ class FakeRunEventDao : RunEventDao {
     }
 }
 
-class StaticChatProvider(
-    private val reasoning: String,
-    private val answer: String,
-) : ChatProvider {
-    override fun streamReply(request: ProviderRequest): Flow<ProviderChunk> = flow {
-        emit(ProviderChunk(reasoningDelta = reasoning))
-        emit(ProviderChunk(answerDelta = answer))
+class ScriptedAgentRuntime(
+    private val events: List<AgentRuntimeEvent>,
+) : AgentRuntime {
+    override fun execute(request: AgentRuntimeRequest): Flow<AgentRuntimeEvent> = flow {
+        events.forEach { emit(it) }
     }
 }
 
-class StaticChatProviderResolver(
-    private val provider: ChatProvider,
-) : ChatProviderResolver {
-    override fun resolve(settings: ProviderSettings): ChatProvider = provider
+class CancellableAgentRuntime : AgentRuntime {
+    private val cancelSignal = MutableStateFlow(false)
+    val cancelledRuns = mutableListOf<String>()
+
+    override fun execute(request: AgentRuntimeRequest): Flow<AgentRuntimeEvent> = flow {
+        emit(AgentRuntimeEvent.RunUpdate(type = RunEventType.STARTED, details = request.triggerLabel))
+        emit(
+            AgentRuntimeEvent.RunUpdate(
+                type = RunEventType.REQUEST_BUILT,
+                details = "Built prompt context from ${request.history.size} transcript messages.",
+            ),
+        )
+        emit(
+            AgentRuntimeEvent.RunUpdate(
+                type = RunEventType.PROVIDER_SELECTED,
+                details = "${request.settings.providerType.displayName} | ${request.settings.model}",
+            ),
+        )
+        cancelSignal.filter { it }.first()
+        emit(
+            AgentRuntimeEvent.RunUpdate(
+                type = RunEventType.CANCELLED,
+                details = "Cancelled from the UI.",
+            ),
+        )
+    }
+
+    override suspend fun cancel(runId: String) {
+        cancelledRuns += runId
+        cancelSignal.emit(true)
+    }
+}
+
+class ScriptedAgentRuntimeResolver(
+    private val runtime: AgentRuntime,
+) : AgentRuntimeResolver {
+    override fun resolve(settings: ProviderSettings): AgentRuntime = runtime
 }
 

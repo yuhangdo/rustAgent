@@ -5,13 +5,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.room.Room
 import com.yuhangdo.rustagent.data.local.AppDatabase
-import com.yuhangdo.rustagent.data.provider.ChatProviderFactory
-import com.yuhangdo.rustagent.data.provider.ChatProviderResolver
 import com.yuhangdo.rustagent.data.repository.ChatRepository
 import com.yuhangdo.rustagent.data.repository.RunRepository
 import com.yuhangdo.rustagent.data.repository.SelectedSessionRepository
 import com.yuhangdo.rustagent.data.repository.SessionRepository
 import com.yuhangdo.rustagent.data.repository.SettingsRepository
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeFactory
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeResolver
 import com.yuhangdo.rustagent.feature.chat.ChatViewModel
 import com.yuhangdo.rustagent.feature.sessions.SessionsViewModel
 import com.yuhangdo.rustagent.feature.settings.SettingsViewModel
@@ -26,6 +26,7 @@ class RustAgentApp : Application() {
 class AppContainer(
     application: Application,
 ) {
+    private val okHttpClient = OkHttpClient.Builder().build()
     private val database = Room.databaseBuilder(
         application.applicationContext,
         AppDatabase::class.java,
@@ -43,8 +44,9 @@ class AppContainer(
         agentRunDao = database.agentRunDao(),
         runEventDao = database.runEventDao(),
     )
-    private val providerResolver: ChatProviderResolver = ChatProviderFactory(
-        okHttpClient = OkHttpClient.Builder().build(),
+    private val runtimeResolver: AgentRuntimeResolver = AgentRuntimeFactory(
+        application = application,
+        okHttpClient = okHttpClient,
     )
 
     val viewModelFactory: ViewModelProvider.Factory = RustAgentViewModelFactory(
@@ -53,7 +55,7 @@ class AppContainer(
         sessionRepository = sessionRepository,
         settingsRepository = settingsRepository,
         selectedSessionRepository = selectedSessionRepository,
-        providerResolver = providerResolver,
+        runtimeResolver = runtimeResolver,
     )
 }
 
@@ -63,7 +65,7 @@ class RustAgentViewModelFactory(
     private val sessionRepository: SessionRepository,
     private val settingsRepository: SettingsRepository,
     private val selectedSessionRepository: SelectedSessionRepository,
-    private val providerResolver: ChatProviderResolver,
+    private val runtimeResolver: AgentRuntimeResolver,
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
@@ -74,7 +76,7 @@ class RustAgentViewModelFactory(
                 sessionRepository = sessionRepository,
                 settingsRepository = settingsRepository,
                 selectedSessionRepository = selectedSessionRepository,
-                providerResolver = providerResolver,
+                runtimeResolver = runtimeResolver,
             ) as T
         }
 

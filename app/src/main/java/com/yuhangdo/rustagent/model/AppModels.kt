@@ -12,6 +12,7 @@ enum class MessageRole {
 enum class ProviderType(val displayName: String) {
     FAKE("Fake Provider"),
     OPENAI_COMPATIBLE("OpenAI-Compatible"),
+    EMBEDDED_RUST_AGENT("Embedded Rust Agent"),
 }
 
 enum class FakeProviderScenario(
@@ -44,6 +45,7 @@ enum class AgentRunStatus(val displayName: String) {
     RUNNING("Running"),
     COMPLETED("Done"),
     FAILED("Failed"),
+    CANCELLED("Cancelled"),
 }
 
 enum class RunEventType(val displayName: String) {
@@ -51,9 +53,13 @@ enum class RunEventType(val displayName: String) {
     REQUEST_BUILT("Prompt Built"),
     PROVIDER_SELECTED("Provider Selected"),
     REASONING_SUMMARY("Reasoning Summary"),
+    TOOL_CALL_REQUESTED("Tool Requested"),
+    TOOL_CALL_COMPLETED("Tool Completed"),
+    TOOL_CALL_FAILED("Tool Failed"),
     ANSWER_RECEIVED("Answer Received"),
     COMPLETED("Completed"),
     FAILED("Failed"),
+    CANCELLED("Cancelled"),
 }
 
 val MessageRole.apiValue: String
@@ -87,6 +93,7 @@ data class ProviderSettings(
     val apiKey: String = "",
     val model: String = "gpt-4o-mini",
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
+    val workspaceRoot: String = "",
     val fakeScenario: FakeProviderScenario = FakeProviderScenario.SUCCESS_WITH_REASONING,
 )
 

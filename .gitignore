@@ -6,4 +6,8 @@ captures
 .DS_Store
 build
 app/build
+.tmp
+native/claude-code-rust/target
+native/claude-code-rust/.env
+app/src/main/jniLibs/**/libclaude_code_rs.so
 

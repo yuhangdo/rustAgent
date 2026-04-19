@@ -59,6 +59,10 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+
+    sourceSets {
+        getByName("main").jniLibs.srcDir("src/main/jniLibs")
+    }
 }
 
 dependencies {
@@ -94,5 +98,43 @@ dependencies {
 
 kapt {
     correctErrorTypes = true
+}
+
+tasks.register<Exec>("buildRustAgentAndroidArm64") {
+    group = "rust"
+    description = "Builds the embedded Rust agent for Android arm64-v8a and copies the .so into jniLibs."
+    val rustOutput = layout.projectDirectory.file("src/main/jniLibs/arm64-v8a/libclaude_code_rs.so")
+
+    workingDir = rootDir
+    inputs.files(
+        rootProject.file("native/claude-code-rust/Cargo.toml"),
+        rootProject.file("native/claude-code-rust/Cargo.lock"),
+        rootProject.file("scripts/build-android-rust-agent.ps1"),
+        rootProject.file("scripts/build-android-rust-agent.sh"),
+        fileTree(rootProject.file("native/claude-code-rust/src")),
+    )
+    outputs.file(rustOutput)
+
+    if (System.getProperty("os.name").lowercase().contains("windows")) {
+        commandLine(
+            "powershell",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            "scripts/build-android-rust-agent.ps1",
+            "-Target",
+            "arm64-v8a",
+        )
+    } else {
+        commandLine(
+            "bash",
+            "scripts/build-android-rust-agent.sh",
+            "arm64-v8a",
+        )
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("buildRustAgentAndroidArm64")
 }
 

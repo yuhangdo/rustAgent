@@ -63,13 +63,11 @@ class SessionRepository(
         preview: String,
         messageCount: Int,
     ) {
-        val current = sessionDao.getById(sessionId) ?: return
-        sessionDao.upsert(
-            current.copy(
-                updatedAt = System.currentTimeMillis(),
-                lastPreview = preview,
-                messageCount = messageCount,
-            ),
+        sessionDao.updateMetadata(
+            sessionId = sessionId,
+            updatedAt = System.currentTimeMillis(),
+            lastPreview = preview,
+            messageCount = messageCount,
         )
     }
 }

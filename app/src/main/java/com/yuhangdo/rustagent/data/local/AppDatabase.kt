@@ -62,6 +62,8 @@ data class AppSettingsEntity(
     val apiKey: String,
     val model: String,
     val systemPrompt: String,
+    @ColumnInfo(defaultValue = "")
+    val workspaceRoot: String,
     @ColumnInfo(defaultValue = "SUCCESS_WITH_REASONING")
     val fakeScenario: String,
 )
@@ -129,6 +131,22 @@ interface SessionDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(session: ConversationSessionEntity)
+
+    @Query(
+        """
+        UPDATE sessions
+        SET updatedAt = :updatedAt,
+            lastPreview = :lastPreview,
+            messageCount = :messageCount
+        WHERE id = :sessionId
+        """,
+    )
+    suspend fun updateMetadata(
+        sessionId: String,
+        updatedAt: Long,
+        lastPreview: String,
+        messageCount: Int,
+    )
 
     @Query("DELETE FROM sessions WHERE id = :sessionId")
     suspend fun deleteById(sessionId: String)
@@ -205,7 +223,7 @@ interface RunEventDao {
         AgentRunEntity::class,
         RunEventEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -240,6 +258,7 @@ fun AppSettingsEntity.asDomain(): ProviderSettings = ProviderSettings(
     apiKey = apiKey,
     model = model,
     systemPrompt = systemPrompt,
+    workspaceRoot = workspaceRoot,
     fakeScenario = FakeProviderScenario.valueOf(fakeScenario),
 )
 
@@ -249,6 +268,7 @@ fun ProviderSettings.asEntity(): AppSettingsEntity = AppSettingsEntity(
     apiKey = apiKey,
     model = model,
     systemPrompt = systemPrompt,
+    workspaceRoot = workspaceRoot,
     fakeScenario = fakeScenario.name,
 )
 
