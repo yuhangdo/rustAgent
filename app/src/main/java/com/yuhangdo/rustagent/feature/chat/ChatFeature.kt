@@ -37,23 +37,25 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.yuhangdo.rustagent.data.provider.ChatProviderResolver
 import com.yuhangdo.rustagent.data.repository.ChatRepository
 import com.yuhangdo.rustagent.data.repository.RunRepository
 import com.yuhangdo.rustagent.data.repository.SelectedSessionRepository
 import com.yuhangdo.rustagent.data.repository.SessionRepository
 import com.yuhangdo.rustagent.data.repository.SettingsRepository
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeEvent
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeRequest
+import com.yuhangdo.rustagent.data.runtime.AgentRuntimeResolver
 import com.yuhangdo.rustagent.model.AgentRun
 import com.yuhangdo.rustagent.model.AgentRunStatus
 import com.yuhangdo.rustagent.model.ChatMessage
 import com.yuhangdo.rustagent.model.MessageRole
-import com.yuhangdo.rustagent.model.ProviderRequest
 import com.yuhangdo.rustagent.model.ProviderSettings
 import com.yuhangdo.rustagent.model.ProviderType
 import com.yuhangdo.rustagent.model.RunEvent
 import com.yuhangdo.rustagent.model.RunEventType
 import com.yuhangdo.rustagent.model.suggestedSessionTitle
 import com.yuhangdo.rustagent.model.summarizeReasoning
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -96,6 +98,7 @@ sealed interface ChatAction {
     data class RunSelected(val runId: String) : ChatAction
     data object RunInspectorDismissed : ChatAction
     data class RetryRunClicked(val runId: String) : ChatAction
+    data class CancelRunClicked(val runId: String) : ChatAction
 }
 
 class ChatViewModel(
@@ -104,7 +107,7 @@ class ChatViewModel(
     private val sessionRepository: SessionRepository,
     private val settingsRepository: SettingsRepository,
     private val selectedSessionRepository: SelectedSessionRepository,
-    private val providerResolver: ChatProviderResolver,
+    private val runtimeResolver: AgentRuntimeResolver,
 ) : ViewModel() {
     private val draftMessage = MutableStateFlow("")
     private val isSending = MutableStateFlow(false)
@@ -210,6 +213,7 @@ class ChatViewModel(
             is ChatAction.RunSelected -> selectedRunId.value = action.runId
             ChatAction.RunInspectorDismissed -> selectedRunId.value = null
             is ChatAction.RetryRunClicked -> retryRun(action.runId)
+            is ChatAction.CancelRunClicked -> cancelRun(action.runId)
         }
     }
 
@@ -288,6 +292,30 @@ class ChatViewModel(
         }
     }
 
+    private fun cancelRun(runId: String) {
+        viewModelScope.launch {
+            try {
+                val run = runRepository.getRun(runId)
+                if (run == null) {
+                    errorMessage.value = "The selected run could not be loaded for cancellation."
+                    return@launch
+                }
+
+                val currentSettings = settingsRepository.getSettings()
+                val runtime = runtimeResolver.resolve(
+                    currentSettings.copy(
+                        providerType = run.providerType,
+                        baseUrl = run.baseUrlSnapshot,
+                        model = run.model,
+                    ),
+                )
+                runtime.cancel(runId)
+            } catch (throwable: Throwable) {
+                errorMessage.value = throwable.message ?: "Unable to cancel the current run."
+            }
+        }
+    }
+
     private suspend fun executeRun(
         sessionId: String,
         userMessage: ChatMessage,
@@ -296,7 +324,6 @@ class ChatViewModel(
         settings: ProviderSettings,
         triggerLabel: String,
     ) {
-        val provider = providerResolver.resolve(settings)
         val run = runRepository.createRun(
             sessionId = sessionId,
             userMessageId = userMessage.id,
@@ -304,87 +331,133 @@ class ChatViewModel(
             settings = settings,
         )
 
-        runRepository.appendEvent(
-            runId = run.id,
-            type = RunEventType.STARTED,
-            details = triggerLabel,
-        )
-        runRepository.appendEvent(
-            runId = run.id,
-            type = RunEventType.REQUEST_BUILT,
-            details = "Built prompt context from ${history.size} transcript messages.",
-        )
-        runRepository.appendEvent(
-            runId = run.id,
-            type = RunEventType.PROVIDER_SELECTED,
-            details = "${settings.providerType.displayName} | ${settings.model}",
-        )
-
+        val runtime = runtimeResolver.resolve(settings)
         var accumulatedReasoning = ""
         var accumulatedAnswer = ""
+        var terminalEventSeen = false
 
         try {
-            provider.streamReply(
-                ProviderRequest(
+            runtime.execute(
+                AgentRuntimeRequest(
+                    runId = run.id,
+                    triggerLabel = triggerLabel,
                     history = history,
                     settings = settings,
                 ),
-            ).collect { chunk ->
-                accumulatedReasoning += chunk.reasoningDelta
-                accumulatedAnswer += chunk.answerDelta
+            ).collect { event ->
+                when (event) {
+                    is AgentRuntimeEvent.OutputUpdate -> {
+                        accumulatedReasoning = event.reasoningContent
+                        accumulatedAnswer = event.answerContent
+                        persistAssistantOutput(
+                            assistantMessageId = assistantMessageId,
+                            reasoningContent = accumulatedReasoning,
+                            answerContent = accumulatedAnswer,
+                        )
+                    }
 
-                chatRepository.updateAssistantMessage(
-                    messageId = assistantMessageId,
-                    reasoningContent = summarizeReasoning(accumulatedReasoning),
-                    answerContent = accumulatedAnswer,
-                )
+                    is AgentRuntimeEvent.RunUpdate -> {
+                        when (event.type) {
+                            RunEventType.COMPLETED -> {
+                                terminalEventSeen = true
+                                val completedRun = runRepository.markCompleted(run.id)
+                                runRepository.appendEvent(
+                                    runId = run.id,
+                                    type = event.type,
+                                    title = event.title,
+                                    details = event.details.ifBlank {
+                                        completedRun?.durationMs?.let { "Completed in ${it}ms." } ?: "Completed."
+                                    },
+                                )
+                            }
+
+                            RunEventType.FAILED -> {
+                                terminalEventSeen = true
+                                errorMessage.value = event.details
+                                if (accumulatedAnswer.isBlank()) {
+                                    accumulatedAnswer = "Agent run failed: ${event.details}"
+                                }
+                                persistAssistantOutput(
+                                    assistantMessageId = assistantMessageId,
+                                    reasoningContent = accumulatedReasoning,
+                                    answerContent = accumulatedAnswer,
+                                )
+                                runRepository.markFailed(run.id, event.details)
+                                runRepository.appendEvent(
+                                    runId = run.id,
+                                    type = event.type,
+                                    title = event.title,
+                                    details = event.details,
+                                )
+                            }
+
+                            RunEventType.CANCELLED -> {
+                                terminalEventSeen = true
+                                if (accumulatedAnswer.isBlank()) {
+                                    accumulatedAnswer = "Agent run cancelled."
+                                }
+                                persistAssistantOutput(
+                                    assistantMessageId = assistantMessageId,
+                                    reasoningContent = accumulatedReasoning,
+                                    answerContent = accumulatedAnswer,
+                                )
+                                runRepository.markCancelled(run.id, event.details)
+                                runRepository.appendEvent(
+                                    runId = run.id,
+                                    type = event.type,
+                                    title = event.title,
+                                    details = event.details.ifBlank { "Cancelled from the UI." },
+                                )
+                            }
+
+                            else -> {
+                                runRepository.appendEvent(
+                                    runId = run.id,
+                                    type = event.type,
+                                    title = event.title,
+                                    details = event.details,
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
-            if (accumulatedReasoning.isBlank() && accumulatedAnswer.isBlank()) {
-                accumulatedAnswer = "Provider returned an empty response."
-                chatRepository.updateAssistantMessage(
-                    messageId = assistantMessageId,
-                    reasoningContent = "",
-                    answerContent = accumulatedAnswer,
-                )
-            }
-
-            if (accumulatedReasoning.isNotBlank()) {
+            if (!terminalEventSeen) {
+                val completedRun = runRepository.markCompleted(run.id)
                 runRepository.appendEvent(
                     runId = run.id,
-                    type = RunEventType.REASONING_SUMMARY,
-                    details = summarizeReasoning(accumulatedReasoning, maxChars = 400),
+                    type = RunEventType.COMPLETED,
+                    details = completedRun?.durationMs?.let { "Completed in ${it}ms." } ?: "Completed.",
                 )
             }
-
-            runRepository.appendEvent(
-                runId = run.id,
-                type = RunEventType.ANSWER_RECEIVED,
-                details = accumulatedAnswer.takeIf { it.isNotBlank() }?.take(400)
-                    ?: "Assistant message updated with an empty-response placeholder.",
-            )
-
-            val completedRun = runRepository.markCompleted(run.id)
-            runRepository.appendEvent(
-                runId = run.id,
-                type = RunEventType.COMPLETED,
-                details = completedRun?.durationMs?.let { "Completed in ${it}ms." } ?: "Completed.",
-            )
         } catch (throwable: Throwable) {
-            val providerError = throwable.message ?: "Unknown provider error."
-            errorMessage.value = providerError
-            chatRepository.updateAssistantMessage(
-                messageId = assistantMessageId,
-                reasoningContent = summarizeReasoning(accumulatedReasoning),
-                answerContent = accumulatedAnswer.ifBlank { "Provider error: $providerError" },
+            val runtimeError = throwable.message ?: "Unknown runtime error."
+            errorMessage.value = runtimeError
+            persistAssistantOutput(
+                assistantMessageId = assistantMessageId,
+                reasoningContent = accumulatedReasoning,
+                answerContent = accumulatedAnswer.ifBlank { "Agent run failed: $runtimeError" },
             )
-            runRepository.markFailed(run.id, providerError)
+            runRepository.markFailed(run.id, runtimeError)
             runRepository.appendEvent(
                 runId = run.id,
                 type = RunEventType.FAILED,
-                details = providerError,
+                details = runtimeError,
             )
         }
+    }
+
+    private suspend fun persistAssistantOutput(
+        assistantMessageId: String,
+        reasoningContent: String,
+        answerContent: String,
+    ) {
+        chatRepository.updateAssistantMessage(
+            messageId = assistantMessageId,
+            reasoningContent = summarizeReasoning(reasoningContent),
+            answerContent = answerContent,
+        )
     }
 }
 
@@ -546,6 +619,7 @@ fun ChatScreen(
             selectedRun = selectedRun,
             onDismiss = { onAction(ChatAction.RunInspectorDismissed) },
             onRetry = { onAction(ChatAction.RetryRunClicked(selectedRun.run.id)) },
+            onCancel = { onAction(ChatAction.CancelRunClicked(selectedRun.run.id)) },
         )
     }
 }
@@ -662,6 +736,7 @@ private fun RunInspectorDialog(
     selectedRun: RunInspectorUiState,
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
+    onCancel: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Surface(
@@ -770,8 +845,15 @@ private fun RunInspectorDialog(
                     TextButton(onClick = onDismiss) {
                         Text("Close")
                     }
-                    Button(onClick = onRetry) {
-                        Text("Retry Run")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (selectedRun.run.status == AgentRunStatus.RUNNING) {
+                            TextButton(onClick = onCancel) {
+                                Text("Cancel Run")
+                            }
+                        }
+                        Button(onClick = onRetry) {
+                            Text("Retry Run")
+                        }
                     }
                 }
             }

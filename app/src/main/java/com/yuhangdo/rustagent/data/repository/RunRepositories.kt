@@ -109,4 +109,20 @@ class RunRepository(
         agentRunDao.upsert(updated.asEntity())
         return updated
     }
+
+    suspend fun markCancelled(
+        runId: String,
+        errorSummary: String,
+    ): AgentRun? {
+        val current = agentRunDao.getById(runId)?.asDomain() ?: return null
+        val completedAt = System.currentTimeMillis()
+        val updated = current.copy(
+            status = AgentRunStatus.CANCELLED,
+            completedAt = completedAt,
+            durationMs = completedAt - current.startedAt,
+            errorSummary = errorSummary,
+        )
+        agentRunDao.upsert(updated.asEntity())
+        return updated
+    }
 }

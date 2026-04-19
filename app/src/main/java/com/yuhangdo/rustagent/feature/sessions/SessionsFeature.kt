@@ -237,6 +237,7 @@ private fun SessionCard(
                         AgentRunStatus.FAILED -> MaterialTheme.colorScheme.error
                         AgentRunStatus.RUNNING -> MaterialTheme.colorScheme.primary
                         AgentRunStatus.COMPLETED -> MaterialTheme.colorScheme.primary
+                        AgentRunStatus.CANCELLED -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                 )
                 Text(

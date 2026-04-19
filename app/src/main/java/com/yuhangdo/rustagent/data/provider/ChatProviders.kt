@@ -36,6 +36,9 @@ class ChatProviderFactory(
     override fun resolve(settings: ProviderSettings): ChatProvider = when (settings.providerType) {
         ProviderType.FAKE -> fakeProvider
         ProviderType.OPENAI_COMPATIBLE -> openAiCompatibleProvider
+        // Legacy provider wiring has no embedded Rust implementation.
+        // Callers that still use this factory fall back to the HTTP provider.
+        ProviderType.EMBEDDED_RUST_AGENT -> openAiCompatibleProvider
     }
 }
 
@@ -135,7 +138,7 @@ class OpenAiCompatibleChatProvider(
             })
         }
 
-        val requestUrl = settings.baseUrl.trimEnd('/') + "/chat/completions"
+        val requestUrl = buildChatCompletionsUrl(settings.baseUrl)
         val httpRequest = Request.Builder()
             .url(requestUrl)
             .header("Authorization", "Bearer ${settings.apiKey}")
@@ -192,6 +195,15 @@ class OpenAiCompatibleChatProvider(
                 append(part.optString("text"))
             }
         }.trim()
+    }
+
+    private fun buildChatCompletionsUrl(baseUrl: String): String {
+        val trimmed = baseUrl.trimEnd('/')
+        return when {
+            trimmed.endsWith("/chat/completions") -> trimmed
+            trimmed.endsWith("/v1") -> "$trimmed/chat/completions"
+            else -> "$trimmed/v1/chat/completions"
+        }
     }
 }
 

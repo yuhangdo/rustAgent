@@ -2,7 +2,6 @@ package com.yuhangdo.rustagent.feature.settings
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -44,6 +43,7 @@ sealed interface SettingsAction {
     data class ApiKeyChanged(val value: String) : SettingsAction
     data class ModelChanged(val value: String) : SettingsAction
     data class SystemPromptChanged(val value: String) : SettingsAction
+    data class WorkspaceRootChanged(val value: String) : SettingsAction
     data object SaveClicked : SettingsAction
 }
 
@@ -104,6 +104,10 @@ class SettingsViewModel(
                 draftSettings.value = draftSettings.value.copy(systemPrompt = action.value)
             }
 
+            is SettingsAction.WorkspaceRootChanged -> {
+                draftSettings.value = draftSettings.value.copy(workspaceRoot = action.value)
+            }
+
             SettingsAction.SaveClicked -> save()
         }
     }
@@ -137,7 +141,7 @@ fun SettingsScreen(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "Switch providers, tune prompt context, and choose fake scenarios that stress the run console.",
+                text = "Switch between fake, direct OpenAI-compatible, and embedded Rust runtimes.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -153,15 +157,21 @@ fun SettingsScreen(
             }
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             ProviderType.entries.forEach { providerType ->
                 val isSelected = providerType == uiState.settings.providerType
                 if (isSelected) {
-                    Button(onClick = { onAction(SettingsAction.ProviderTypeChanged(providerType)) }) {
+                    Button(
+                        onClick = { onAction(SettingsAction.ProviderTypeChanged(providerType)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Text(providerType.displayName)
                     }
                 } else {
-                    OutlinedButton(onClick = { onAction(SettingsAction.ProviderTypeChanged(providerType)) }) {
+                    OutlinedButton(
+                        onClick = { onAction(SettingsAction.ProviderTypeChanged(providerType)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
                         Text(providerType.displayName)
                     }
                 }
@@ -208,6 +218,31 @@ fun SettingsScreen(
             }
         }
 
+        if (uiState.settings.providerType == ProviderType.EMBEDDED_RUST_AGENT) {
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Embedded Rust Runtime",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "The app will start a packaged Rust runtime inside the APK and talk to it over localhost HTTP.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "Workspace Root is optional. Leave it blank to use the app sandbox directory.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
         OutlinedTextField(
             value = uiState.settings.baseUrl,
             onValueChange = { onAction(SettingsAction.BaseUrlChanged(it)) },
@@ -239,6 +274,16 @@ fun SettingsScreen(
             maxLines = 8,
             label = { Text("System Prompt") },
         )
+
+        if (uiState.settings.providerType == ProviderType.EMBEDDED_RUST_AGENT) {
+            OutlinedTextField(
+                value = uiState.settings.workspaceRoot,
+                onValueChange = { onAction(SettingsAction.WorkspaceRootChanged(it)) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Workspace Root (Optional)") },
+                placeholder = { Text("/data/user/0/com.yuhangdo.rustagent/files") },
+            )
+        }
 
         Button(
             onClick = { onAction(SettingsAction.SaveClicked) },
