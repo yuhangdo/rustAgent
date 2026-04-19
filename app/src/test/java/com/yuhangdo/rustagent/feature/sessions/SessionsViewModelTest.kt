@@ -1,5 +1,6 @@
 package com.yuhangdo.rustagent.feature.sessions
 
+import app.cash.turbine.test
 import com.google.common.truth.Truth.assertThat
 import com.yuhangdo.rustagent.FakeAgentRunDao
 import com.yuhangdo.rustagent.FakeRunEventDao
@@ -20,7 +21,7 @@ class SessionsViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
-    fun createSession_selects_new_session() = runTest {
+    fun createSession_selectsNewSession() = runTest {
         val selectedSessionRepository = SelectedSessionRepository()
         val viewModel = SessionsViewModel(
             sessionRepository = SessionRepository(FakeSessionDao()),
@@ -28,12 +29,32 @@ class SessionsViewModelTest {
             selectedSessionRepository = selectedSessionRepository,
         )
 
-        viewModel.onAction(SessionsAction.CreateClicked)
+        viewModel.onIntent(SessionsContract.Intent.CreateSession)
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
         assertThat(state.sessions).hasSize(1)
         assertThat(state.selectedSessionId).isEqualTo(state.sessions.first().id)
     }
-}
 
+    @Test
+    fun selectSession_emitsOpenChatEffect() = runTest {
+        val sessionRepository = SessionRepository(FakeSessionDao())
+        val selectedSessionRepository = SelectedSessionRepository()
+        val viewModel = SessionsViewModel(
+            sessionRepository = sessionRepository,
+            runRepository = RunRepository(FakeAgentRunDao(), FakeRunEventDao()),
+            selectedSessionRepository = selectedSessionRepository,
+        )
+        val sessionId = sessionRepository.createSession("Debug session")
+        advanceUntilIdle()
+
+        viewModel.effects.test {
+            viewModel.onIntent(SessionsContract.Intent.SelectSession(sessionId))
+            advanceUntilIdle()
+
+            assertThat(awaitItem()).isEqualTo(SessionsContract.Effect.OpenChat(sessionId))
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+}

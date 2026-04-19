@@ -15,6 +15,7 @@ import com.yuhangdo.rustagent.data.runtime.AgentRuntimeResolver
 import com.yuhangdo.rustagent.feature.chat.ChatViewModel
 import com.yuhangdo.rustagent.feature.sessions.SessionsViewModel
 import com.yuhangdo.rustagent.feature.settings.SettingsViewModel
+import com.yuhangdo.rustagent.ui.appshell.AppShellViewModel
 import okhttp3.OkHttpClient
 
 class RustAgentApp : Application() {
@@ -69,6 +70,10 @@ class RustAgentViewModelFactory(
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T = when {
+        modelClass.isAssignableFrom(AppShellViewModel::class.java) -> {
+            AppShellViewModel() as T
+        }
+
         modelClass.isAssignableFrom(ChatViewModel::class.java) -> {
             ChatViewModel(
                 chatRepository = chatRepository,

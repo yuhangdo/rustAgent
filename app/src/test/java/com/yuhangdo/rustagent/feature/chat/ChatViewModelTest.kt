@@ -17,6 +17,7 @@ import com.yuhangdo.rustagent.data.repository.SessionRepository
 import com.yuhangdo.rustagent.data.repository.SettingsRepository
 import com.yuhangdo.rustagent.data.runtime.AgentRuntimeEvent
 import com.yuhangdo.rustagent.model.AgentRunStatus
+import com.yuhangdo.rustagent.model.MessageRole
 import com.yuhangdo.rustagent.model.RunEventType
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.first
@@ -31,7 +32,7 @@ class ChatViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     @Test
-    fun sendMessage_persists_reasoning_and_answer_in_separate_fields() = runTest {
+    fun sendMessage_persists_reasoning_and_answer_in_message_presentations() = runTest {
         val sessionDao = FakeSessionDao()
         val messageDao = FakeChatMessageDao()
         val sessionRepository = SessionRepository(sessionDao)
@@ -64,13 +65,13 @@ class ChatViewModelTest {
             runtimeResolver = runtimeResolver,
         )
 
-        viewModel.onAction(ChatAction.DraftChanged("Build android-v1"))
-        viewModel.onAction(ChatAction.SendClicked)
+        viewModel.onIntent(ChatContract.Intent.DraftChanged("Build android-v1"))
+        viewModel.onIntent(ChatContract.Intent.SendClicked)
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
         assertThat(state.messages).hasSize(2)
-        assertThat(state.messages[1].reasoningContent).isEqualTo("Reasoning trace")
+        assertThat(state.messages[1].reasoningPreview).isEqualTo("Reasoning trace")
         assertThat(state.messages[1].answerContent).isEqualTo("Final answer")
 
         val runs = runRepository.observeAllRuns().first()
@@ -86,6 +87,54 @@ class ChatViewModelTest {
             RunEventType.ANSWER_RECEIVED,
             RunEventType.COMPLETED,
         ).inOrder()
+    }
+
+    @Test
+    fun openDeepThinking_buildsStructuredPanelForSelectedRun() = runTest {
+        val sessionDao = FakeSessionDao()
+        val messageDao = FakeChatMessageDao()
+        val sessionRepository = SessionRepository(sessionDao)
+        val chatRepository = ChatRepository(messageDao, sessionRepository)
+        val runRepository = RunRepository(FakeAgentRunDao(), FakeRunEventDao())
+        val settingsRepository = SettingsRepository(FakeAppSettingsDao())
+        val selectedSessionRepository = SelectedSessionRepository()
+        val runtimeResolver = ScriptedAgentRuntimeResolver(
+            ScriptedAgentRuntime(
+                events = listOf(
+                    AgentRuntimeEvent.RunUpdate(RunEventType.STARTED, "User message submitted."),
+                    AgentRuntimeEvent.RunUpdate(RunEventType.REQUEST_BUILT, "Built prompt context from 1 transcript messages."),
+                    AgentRuntimeEvent.RunUpdate(RunEventType.PROVIDER_SELECTED, "Fake Provider | gpt-4o-mini"),
+                    AgentRuntimeEvent.OutputUpdate(
+                        reasoningContent = "Reasoning trace",
+                        answerContent = "Final answer",
+                    ),
+                    AgentRuntimeEvent.RunUpdate(RunEventType.REASONING_SUMMARY, "Reasoning trace"),
+                    AgentRuntimeEvent.RunUpdate(RunEventType.ANSWER_RECEIVED, "Final answer"),
+                    AgentRuntimeEvent.RunUpdate(RunEventType.COMPLETED, "Completed in 12ms."),
+                ),
+            ),
+        )
+        val viewModel = ChatViewModel(
+            chatRepository = chatRepository,
+            runRepository = runRepository,
+            sessionRepository = sessionRepository,
+            settingsRepository = settingsRepository,
+            selectedSessionRepository = selectedSessionRepository,
+            runtimeResolver = runtimeResolver,
+        )
+
+        viewModel.onIntent(ChatContract.Intent.DraftChanged("Inspect this run"))
+        viewModel.onIntent(ChatContract.Intent.SendClicked)
+        advanceUntilIdle()
+
+        val runId = runRepository.observeAllRuns().first().first().id
+        viewModel.onIntent(ChatContract.Intent.OpenDeepThinking(runId))
+        advanceUntilIdle()
+
+        val panel = viewModel.uiState.value.deepThinkingPanel
+        assertThat(panel).isNotNull()
+        assertThat(panel!!.runId).isEqualTo(runId)
+        assertThat(panel.items).isNotEmpty()
     }
 
     @Test
@@ -122,23 +171,23 @@ class ChatViewModelTest {
             runtimeResolver = runtimeResolver,
         )
 
-        viewModel.onAction(ChatAction.DraftChanged("Retry this run"))
-        viewModel.onAction(ChatAction.SendClicked)
+        viewModel.onIntent(ChatContract.Intent.DraftChanged("Retry this run"))
+        viewModel.onIntent(ChatContract.Intent.SendClicked)
         advanceUntilIdle()
 
         val firstRunId = runRepository.observeAllRuns().first().first().id
-        viewModel.onAction(ChatAction.RetryRunClicked(firstRunId))
+        viewModel.onIntent(ChatContract.Intent.RetryRun(firstRunId))
         advanceUntilIdle()
 
         val finalState = viewModel.uiState.value
         assertThat(finalState.messages).hasSize(3)
-        assertThat(finalState.messages.count { it.role.name == "USER" }).isEqualTo(1)
-        assertThat(finalState.messages.count { it.role.name == "ASSISTANT" }).isEqualTo(2)
+        assertThat(finalState.messages.count { it.role == MessageRole.USER }).isEqualTo(1)
+        assertThat(finalState.messages.count { it.role == MessageRole.ASSISTANT }).isEqualTo(2)
         assertThat(runRepository.observeAllRuns().first()).hasSize(2)
     }
 
     @Test
-    fun sendMessage_whenRuntimeReportsFailure_marks_run_failed_and_updates_assistant() = runTest {
+    fun sendMessage_whenRuntimeReportsFailure_marksRunFailed_andUpdatesAssistantPresentation() = runTest {
         val sessionDao = FakeSessionDao()
         val messageDao = FakeChatMessageDao()
         val sessionRepository = SessionRepository(sessionDao)
@@ -165,8 +214,8 @@ class ChatViewModelTest {
             runtimeResolver = runtimeResolver,
         )
 
-        viewModel.onAction(ChatAction.DraftChanged("Use embedded runtime"))
-        viewModel.onAction(ChatAction.SendClicked)
+        viewModel.onIntent(ChatContract.Intent.DraftChanged("Use embedded runtime"))
+        viewModel.onIntent(ChatContract.Intent.SendClicked)
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
@@ -181,7 +230,7 @@ class ChatViewModelTest {
     }
 
     @Test
-    fun cancelRun_requests_runtime_cancellation_and_marks_run_cancelled() = runTest {
+    fun cancelRun_requestsRuntimeCancellation_andMarksRunCancelled() = runTest {
         val sessionDao = FakeSessionDao()
         val messageDao = FakeChatMessageDao()
         val sessionRepository = SessionRepository(sessionDao)
@@ -200,12 +249,12 @@ class ChatViewModelTest {
             runtimeResolver = runtimeResolver,
         )
 
-        viewModel.onAction(ChatAction.DraftChanged("Cancel this run"))
-        viewModel.onAction(ChatAction.SendClicked)
+        viewModel.onIntent(ChatContract.Intent.DraftChanged("Cancel this run"))
+        viewModel.onIntent(ChatContract.Intent.SendClicked)
         advanceUntilIdle()
 
         val runId = runRepository.observeAllRuns().first().first().id
-        viewModel.onAction(ChatAction.CancelRunClicked(runId))
+        viewModel.onIntent(ChatContract.Intent.CancelRun(runId))
         advanceUntilIdle()
 
         assertThat(runtime.cancelledRuns).contains(runId)
@@ -219,4 +268,3 @@ class ChatViewModelTest {
         assertThat(runRepository.getEventsForRun(runId).last().type).isEqualTo(RunEventType.CANCELLED)
     }
 }
-
