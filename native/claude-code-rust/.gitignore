@@ -1,31 +1,34 @@
-# Rust
+# Rust build outputs
 /target/
-Cargo.lock
 *.pdb
+*.rlib
+*.profraw
+*.profdata
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+settings.json
+!settings.json.template
 
-# OS
-.DS_Store
-Thumbs.db
+# Local scratch data
+/test-project/
+*.json.bak
+*.log
 
-# Build artifacts
+# Native/runtime binaries generated locally
 *.exe
 *.dll
 *.so
 *.dylib
 
-# Test
-/test-project/
-*.json.bak
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
 
-# Config (keep template)
-settings.json
-!settings.json.template
-
-# Logs
-*.log
+# OS junk
+.DS_Store
+Thumbs.db
