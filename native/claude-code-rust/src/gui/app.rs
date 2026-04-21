@@ -3,7 +3,12 @@
 use eframe::Frame;
 use egui::{CentralPanel, Context, SidePanel, TopBottomPanel};
 
-use super::{chat::ChatPanel, sidebar::{Sidebar, Tab}, settings::SettingsPanel, Theme, GuiMessage};
+use super::{
+    chat::ChatPanel,
+    settings::SettingsPanel,
+    sidebar::{Sidebar, Tab},
+    GuiMessage, Theme,
+};
 
 /// Main application state
 pub struct ClaudeCodeApp {
@@ -118,10 +123,10 @@ impl ClaudeCodeApp {
     /// Configure custom fonts
     fn configure_fonts(ctx: &Context) {
         let fonts = egui::FontDefinitions::default();
-        
+
         // Add custom fonts here if needed
         // fonts.font_data.insert("my_font".to_owned(), ...);
-        
+
         ctx.set_fonts(fonts);
     }
 
@@ -205,41 +210,47 @@ impl ClaudeCodeApp {
 
                     // Handle streaming response
                     let mut stream = response.bytes_stream();
-                    let mut buffer = String::new();
+                    let mut assembler = crate::streaming::StreamingAssembler::new();
 
                     while let Some(chunk) = stream.next().await {
                         match chunk {
                             Ok(bytes) => {
-                                // Parse SSE stream
-                                let text = String::from_utf8_lossy(&bytes);
-                                for line in text.lines() {
-                                    if line.starts_with("data: ") {
-                                        let data = &line[6..];
-                                        if data == "[DONE]" {
-                                            tx.send(GuiMessage::StreamChunk {
-                                                content: buffer.clone(),
-                                                done: true,
-                                            })
-                                            .await
-                                            .ok();
-                                            return;
-                                        }
-
-                                        if let Ok(chunk) =
-                                            serde_json::from_str::<crate::api::StreamChunk>(data)
-                                        {
-                                            if let Some(choice) = chunk.choices.first() {
-                                                if let Some(content) = &choice.delta.content {
-                                                    buffer.push_str(content);
+                                match assembler.push_bytes(&bytes) {
+                                    Ok(updates) => {
+                                        for update in updates {
+                                            match update {
+                                                crate::streaming::StreamUpdate::AnswerDelta {
+                                                    full_text,
+                                                    ..
+                                                } => {
                                                     tx.send(GuiMessage::StreamChunk {
-                                                        content: buffer.clone(),
+                                                        content: full_text,
                                                         done: false,
                                                     })
                                                     .await
                                                     .ok();
                                                 }
+                                                crate::streaming::StreamUpdate::Finished { .. } => {
+                                                    tx.send(GuiMessage::StreamChunk {
+                                                        content: assembler.snapshot().answer_text,
+                                                        done: true,
+                                                    })
+                                                    .await
+                                                    .ok();
+                                                    return;
+                                                }
+                                                crate::streaming::StreamUpdate::ReasoningDelta { .. }
+                                                | crate::streaming::StreamUpdate::ToolCallDelta { .. } => {}
                                             }
                                         }
+                                    }
+                                    Err(error) => {
+                                        tx.send(GuiMessage::ApiError {
+                                            error: format!("Stream parse error: {}", error),
+                                        })
+                                        .await
+                                        .ok();
+                                        return;
                                     }
                                 }
                             }
@@ -268,7 +279,12 @@ impl ClaudeCodeApp {
     /// Handle streaming response chunks
     fn handle_stream_chunk(&mut self, content: String, done: bool) {
         if let Some(msg_id) = &self.pending_message_id {
-            if let Some(msg) = self.chat_panel.messages.iter_mut().find(|m| m.id == *msg_id) {
+            if let Some(msg) = self
+                .chat_panel
+                .messages
+                .iter_mut()
+                .find(|m| m.id == *msg_id)
+            {
                 msg.content = content;
                 msg.is_streaming = !done;
 
@@ -304,7 +320,8 @@ impl ClaudeCodeApp {
 
     /// Handle test connection results
     fn handle_test_result(&mut self, success: bool, message: String) {
-        self.settings_panel.set_test_result(success, message.clone());
+        self.settings_panel
+            .set_test_result(success, message.clone());
         self.show_status(&message);
     }
 
@@ -382,9 +399,9 @@ impl eframe::App for ClaudeCodeApp {
                     ui.heading(
                         egui::RichText::new("Claude Code")
                             .color(self.theme.primary_color())
-                            .size(20.0)
+                            .size(20.0),
                     );
-                    
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Window controls
                         if ui.button("➖").clicked() {
@@ -396,17 +413,21 @@ impl eframe::App for ClaudeCodeApp {
                         if ui.button("✕").clicked() {
                             // Close window
                         }
-                        
+
                         ui.add_space(8.0);
-                        
+
                         // Settings button
-                        let settings_text = if self.show_settings { "✓ ⚙️" } else { "⚙️" };
+                        let settings_text = if self.show_settings {
+                            "✓ ⚙️"
+                        } else {
+                            "⚙️"
+                        };
                         if ui.button(settings_text).clicked() {
                             self.show_settings = !self.show_settings;
                         }
-                        
+
                         ui.add_space(8.0);
-                        
+
                         // Theme toggle
                         let theme_icon = match self.theme {
                             Theme::Light => "☀️",
@@ -457,11 +478,11 @@ impl eframe::App for ClaudeCodeApp {
                             ui.heading(
                                 egui::RichText::new("Coming Soon")
                                     .color(self.theme.muted_text_color())
-                                    .size(24.0)
+                                    .size(24.0),
                             );
                             ui.label(
                                 egui::RichText::new("This feature is under development")
-                                    .color(self.theme.muted_text_color())
+                                    .color(self.theme.muted_text_color()),
                             );
                         });
                     }
@@ -479,31 +500,31 @@ impl eframe::App for ClaudeCodeApp {
                         ui.label(
                             egui::RichText::new(message)
                                 .color(self.theme.info_color())
-                                .size(11.0)
+                                .size(11.0),
                         );
                     } else {
                         ui.label(
                             egui::RichText::new("Ready")
                                 .color(self.theme.muted_text_color())
-                                .size(11.0)
+                                .size(11.0),
                         );
                     }
-                    
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Version info
                         ui.label(
                             egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
                                 .color(self.theme.muted_text_color())
-                                .size(11.0)
+                                .size(11.0),
                         );
-                        
+
                         ui.add_space(16.0);
-                        
+
                         // Connection status
                         ui.label(
                             egui::RichText::new("● Connected")
                                 .color(self.theme.success_color())
-                                .size(11.0)
+                                .size(11.0),
                         );
                     });
                 });

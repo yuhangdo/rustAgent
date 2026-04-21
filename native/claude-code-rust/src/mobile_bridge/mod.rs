@@ -17,8 +17,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 
 use crate::agent_runtime::{
-    AgentCancellation, AgentEvent, AgentEventHandler, AgentExecutionOutcome,
-    AgentExecutionRequest, AgentRuntime,
+    AgentCancellation, AgentEvent, AgentEventHandler, AgentExecutionOutcome, AgentExecutionRequest,
+    AgentRuntime,
 };
 use crate::api::ChatMessage;
 use crate::config::Settings;
@@ -197,7 +197,10 @@ impl MobileBridgeServer {
         )
         .await;
 
-        match self.execute_agent_run(&request, &run_id, workspace_root).await {
+        match self
+            .execute_agent_run(&request, &run_id, workspace_root)
+            .await
+        {
             Ok(AgentExecutionOutcome::Completed(result)) => {
                 self.mark_completed(
                     &run_id,
@@ -225,9 +228,7 @@ impl MobileBridgeServer {
     ) -> Result<AgentExecutionOutcome> {
         if request.settings.base_url.trim().is_empty() || request.settings.api_key.trim().is_empty()
         {
-            return Err(anyhow!(
-                "Embedded runtime needs both base URL and API key."
-            ));
+            return Err(anyhow!("Embedded runtime needs both base URL and API key."));
         }
 
         let runtime = AgentRuntime::new(build_settings(&request.settings, workspace_root.clone()));
@@ -419,6 +420,9 @@ struct BridgeEventSink {
 impl AgentEventHandler for BridgeEventSink {
     async fn on_event(&self, event: AgentEvent) {
         match event {
+            AgentEvent::ReasoningDelta { full_text, .. } => {
+                self.server.update_reasoning(&self.run_id, full_text).await;
+            }
             AgentEvent::Reasoning { full_text, summary } => {
                 self.server.update_reasoning(&self.run_id, full_text).await;
                 self.server
@@ -469,8 +473,13 @@ impl AgentEventHandler for BridgeEventSink {
                     )
                     .await;
             }
+            AgentEvent::AnswerDelta { full_text, .. } => {
+                self.server.update_answer(&self.run_id, full_text).await;
+            }
             AgentEvent::FinalAnswer { answer } => {
-                self.server.update_answer(&self.run_id, answer.clone()).await;
+                self.server
+                    .update_answer(&self.run_id, answer.clone())
+                    .await;
                 self.server
                     .append_event(
                         &self.run_id,
@@ -508,9 +517,7 @@ struct CancelRunResponse {
     run_id: String,
 }
 
-async fn health_handler(
-    State(server): State<MobileBridgeServer>,
-) -> Json<HealthResponse> {
+async fn health_handler(State(server): State<MobileBridgeServer>) -> Json<HealthResponse> {
     Json(HealthResponse {
         ok: true,
         workspace_root: server.default_workspace_root.display().to_string(),
@@ -521,7 +528,10 @@ async fn start_run_handler(
     State(server): State<MobileBridgeServer>,
     Json(request): Json<BridgeRunRequest>,
 ) -> std::result::Result<Json<StartRunResponse>, (StatusCode, String)> {
-    server.start_run(request.clone()).await.map_err(internal_error)?;
+    server
+        .start_run(request.clone())
+        .await
+        .map_err(internal_error)?;
 
     Ok(Json(StartRunResponse {
         accepted: true,
@@ -556,10 +566,7 @@ fn internal_error(error: anyhow::Error) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
-fn build_settings(
-    request_settings: &BridgeRequestSettings,
-    workspace_root: PathBuf,
-) -> Settings {
+fn build_settings(request_settings: &BridgeRequestSettings, workspace_root: PathBuf) -> Settings {
     let mut settings = Settings::default();
     settings.api.api_key = Some(request_settings.api_key.clone());
     settings.api.base_url = request_settings.base_url.clone();
@@ -601,7 +608,8 @@ pub fn ensure_mobile_bridge_server_started(default_workspace_root: PathBuf) -> R
     }
 
     let runtime = Runtime::new()?;
-    let listener = runtime.block_on(async { tokio::net::TcpListener::bind("127.0.0.1:0").await })?;
+    let listener =
+        runtime.block_on(async { tokio::net::TcpListener::bind("127.0.0.1:0").await })?;
     let port = listener.local_addr()?.port();
     let app = MobileBridgeServer::with_workspace_root(default_workspace_root).router();
 

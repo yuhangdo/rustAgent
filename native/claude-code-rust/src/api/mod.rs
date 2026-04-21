@@ -36,6 +36,14 @@ impl ApiClient {
         &self.settings.model
     }
 
+    pub fn streaming_enabled(&self) -> bool {
+        self.settings.api.streaming
+    }
+
+    pub fn timeout_seconds(&self) -> u64 {
+        self.settings.api.timeout
+    }
+
     pub async fn chat(
         &self,
         messages: Vec<ChatMessage>,
@@ -100,9 +108,16 @@ impl ApiClient {
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
             .json(&request)
             .send()
             .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("API error ({}): {}", status, body));
+        }
 
         Ok(response)
     }
@@ -115,7 +130,11 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, parameters: serde_json::Value) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        parameters: serde_json::Value,
+    ) -> Self {
         Self {
             r#type: "function".to_string(),
             function: ToolFunction {
@@ -151,7 +170,11 @@ pub struct ToolCallFunction {
 pub struct ChatMessage {
     pub role: String,
     pub content: Option<String>,
-    #[serde(default, alias = "reasoningContent", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        alias = "reasoningContent",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,

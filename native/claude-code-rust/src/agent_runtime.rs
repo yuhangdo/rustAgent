@@ -2,13 +2,17 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::{json, Value};
+use tokio::time::timeout;
 
-use crate::api::{ApiClient, ChatMessage, ToolDefinition};
+use crate::api::{ApiClient, ChatMessage, ToolCall, ToolCallFunction, ToolDefinition};
 use crate::config::Settings;
+use crate::streaming::{StreamSnapshot, StreamUpdate, StreamingAssembler};
 use crate::tools::{ToolError, ToolOutput, ToolRegistry};
 
 const DEFAULT_MAX_ITERATIONS: usize = 8;
@@ -19,6 +23,7 @@ const DEFAULT_RECENT_MESSAGE_COUNT: usize = 8;
 const MAX_PROJECT_CONTEXT_DOC_CHARS: usize = 4_000;
 const MAX_COMPACTED_TOOL_MESSAGE_CHARS: usize = 640;
 const MAX_COMPACTED_TEXT_MESSAGE_CHARS: usize = 960;
+const STREAM_POLL_INTERVAL_MILLIS: u64 = 250;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextDocumentKind {
@@ -55,9 +60,17 @@ pub enum AgentExecutionOutcome {
 
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
+    ReasoningDelta {
+        full_text: String,
+        delta: String,
+    },
     Reasoning {
         full_text: String,
         summary: String,
+    },
+    AnswerDelta {
+        full_text: String,
+        delta: String,
     },
     ToolCallRequested {
         tool_name: String,
@@ -102,6 +115,13 @@ pub struct AgentRuntime {
     max_response_tokens: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+struct TurnResult {
+    reasoning: String,
+    answer: String,
+    tool_calls: Vec<ToolCall>,
+}
+
 impl AgentRuntime {
     pub fn new(settings: Settings) -> Self {
         let max_response_tokens = settings.api.max_tokens;
@@ -144,30 +164,24 @@ impl AgentRuntime {
                 return Ok(AgentExecutionOutcome::Cancelled);
             }
 
-            let response = self
-                .client
-                .chat(messages.clone(), Some(tool_definitions.clone()))
-                .await?;
-
-            let choice = response
-                .choices
-                .first()
-                .cloned()
-                .ok_or_else(|| anyhow!("API response did not include a choice"))?;
-
-            if let Some(reasoning) = choice.message.reasoning_content.clone() {
-                if !reasoning.trim().is_empty() {
-                    latest_reasoning = reasoning.clone();
-                    event_handler
-                        .on_event(AgentEvent::Reasoning {
-                            summary: summarize_text(&reasoning, 400),
-                            full_text: reasoning,
-                        })
-                        .await;
+            let turn_result = if self.client.streaming_enabled() {
+                match self
+                    .execute_stream_turn(&messages, &tool_definitions, event_handler, cancellation)
+                    .await?
+                {
+                    Some(result) => result,
+                    None => return Ok(AgentExecutionOutcome::Cancelled),
                 }
+            } else {
+                self.execute_non_stream_turn(&messages, &tool_definitions, event_handler)
+                    .await?
+            };
+
+            if !turn_result.reasoning.trim().is_empty() {
+                latest_reasoning = turn_result.reasoning.clone();
             }
 
-            let tool_calls = choice.message.tool_calls.clone().unwrap_or_default();
+            let tool_calls = turn_result.tool_calls;
             if !tool_calls.is_empty() {
                 messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
 
@@ -229,13 +243,7 @@ impl AgentRuntime {
                 continue;
             }
 
-            let answer = choice
-                .message
-                .content
-                .clone()
-                .unwrap_or_default()
-                .trim()
-                .to_string();
+            let answer = turn_result.answer.trim().to_string();
             let final_answer = if answer.is_empty() {
                 "Provider returned an empty answer body.".to_string()
             } else {
@@ -268,6 +276,157 @@ impl AgentRuntime {
             .map(|tool| ToolDefinition::new(tool.name(), tool.description(), tool.input_schema()))
             .collect()
     }
+
+    async fn execute_non_stream_turn(
+        &self,
+        messages: &[ChatMessage],
+        tool_definitions: &[ToolDefinition],
+        event_handler: &dyn AgentEventHandler,
+    ) -> Result<TurnResult> {
+        let response = self
+            .client
+            .chat(messages.to_vec(), Some(tool_definitions.to_vec()))
+            .await?;
+
+        let choice = response
+            .choices
+            .first()
+            .cloned()
+            .ok_or_else(|| anyhow!("API response did not include a choice"))?;
+
+        let reasoning = choice.message.reasoning_content.clone().unwrap_or_default();
+        if !reasoning.trim().is_empty() {
+            event_handler
+                .on_event(AgentEvent::Reasoning {
+                    summary: summarize_text(&reasoning, 400),
+                    full_text: reasoning.clone(),
+                })
+                .await;
+        }
+
+        Ok(TurnResult {
+            reasoning,
+            answer: choice
+                .message
+                .content
+                .clone()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            tool_calls: choice.message.tool_calls.clone().unwrap_or_default(),
+        })
+    }
+
+    async fn execute_stream_turn(
+        &self,
+        messages: &[ChatMessage],
+        tool_definitions: &[ToolDefinition],
+        event_handler: &dyn AgentEventHandler,
+        cancellation: &dyn AgentCancellation,
+    ) -> Result<Option<TurnResult>> {
+        let response = self
+            .client
+            .chat_stream(messages.to_vec(), Some(tool_definitions.to_vec()))
+            .await?;
+        let mut byte_stream = response.bytes_stream();
+        let mut assembler = StreamingAssembler::new();
+        let mut stalled_for = Duration::ZERO;
+        let poll_interval = Duration::from_millis(STREAM_POLL_INTERVAL_MILLIS);
+        let stall_timeout = Duration::from_secs(self.client.timeout_seconds().clamp(5, 30));
+
+        loop {
+            match timeout(poll_interval, byte_stream.next()).await {
+                Ok(Some(Ok(bytes))) => {
+                    stalled_for = Duration::ZERO;
+                    for update in assembler.push_bytes(&bytes)? {
+                        match update {
+                            StreamUpdate::ReasoningDelta { full_text, delta } => {
+                                event_handler
+                                    .on_event(AgentEvent::ReasoningDelta { full_text, delta })
+                                    .await;
+                            }
+                            StreamUpdate::AnswerDelta { full_text, delta } => {
+                                event_handler
+                                    .on_event(AgentEvent::AnswerDelta { full_text, delta })
+                                    .await;
+                            }
+                            StreamUpdate::ToolCallDelta { .. } | StreamUpdate::Finished { .. } => {}
+                        }
+                    }
+                }
+                Ok(Some(Err(error))) => {
+                    return Err(anyhow!("Streaming response error: {}", error));
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    if cancellation.is_cancelled() {
+                        return Ok(None);
+                    }
+
+                    stalled_for += poll_interval;
+                    if stalled_for >= stall_timeout {
+                        return Err(anyhow!(
+                            "Streaming response stalled for more than {} second(s).",
+                            stall_timeout.as_secs()
+                        ));
+                    }
+                }
+            }
+
+            if cancellation.is_cancelled() {
+                return Ok(None);
+            }
+        }
+
+        let snapshot = assembler.snapshot();
+        if !snapshot.reasoning_text.trim().is_empty() {
+            event_handler
+                .on_event(AgentEvent::Reasoning {
+                    summary: summarize_text(&snapshot.reasoning_text, 400),
+                    full_text: snapshot.reasoning_text.clone(),
+                })
+                .await;
+        }
+
+        Ok(Some(stream_snapshot_into_turn_result(snapshot)?))
+    }
+}
+
+fn stream_snapshot_into_turn_result(snapshot: StreamSnapshot) -> Result<TurnResult> {
+    let tool_calls = snapshot
+        .tool_calls
+        .into_iter()
+        .map(stream_tool_call_into_api_tool_call)
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(TurnResult {
+        reasoning: snapshot.reasoning_text,
+        answer: snapshot.answer_text,
+        tool_calls,
+    })
+}
+
+fn stream_tool_call_into_api_tool_call(
+    stream_tool_call: crate::streaming::StreamToolCall,
+) -> Result<ToolCall> {
+    let id = stream_tool_call
+        .id
+        .ok_or_else(|| anyhow!("Streaming tool call {} missing id", stream_tool_call.index))?;
+    let name = stream_tool_call.name.ok_or_else(|| {
+        anyhow!(
+            "Streaming tool call {} missing name",
+            stream_tool_call.index
+        )
+    })?;
+
+    Ok(ToolCall {
+        id,
+        r#type: "function".to_string(),
+        function: ToolCallFunction {
+            name,
+            arguments: stream_tool_call.arguments,
+        },
+    })
 }
 
 fn parse_tool_arguments(raw: &str) -> Result<Value> {
@@ -1237,5 +1396,47 @@ mod tests {
         assert!(!combined.contains("Project Memory"));
         assert!(!combined.contains("Session Memory"));
         assert!(!combined.contains("This should be ignored."));
+    }
+
+    #[test]
+    fn stream_snapshot_without_tool_calls_becomes_final_answer() {
+        let result = stream_snapshot_into_turn_result(crate::streaming::StreamSnapshot {
+            answer_text: "hello from stream".to_string(),
+            reasoning_text: "thinking".to_string(),
+            tool_calls: Vec::new(),
+            finish_reason: Some("stop".to_string()),
+            completed: true,
+        })
+        .expect("stream result");
+
+        assert_eq!(result.answer, "hello from stream");
+        assert_eq!(result.reasoning, "thinking");
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn stream_snapshot_with_tool_calls_restores_runtime_tool_calls() {
+        let result = stream_snapshot_into_turn_result(crate::streaming::StreamSnapshot {
+            answer_text: String::new(),
+            reasoning_text: String::new(),
+            tool_calls: vec![crate::streaming::StreamToolCall {
+                index: 0,
+                id: Some("call_9".to_string()),
+                name: Some("search".to_string()),
+                arguments: "{\"path\":\".\",\"pattern\":\"streaming\"}".to_string(),
+            }],
+            finish_reason: Some("tool_calls".to_string()),
+            completed: true,
+        })
+        .expect("stream result");
+
+        assert!(result.answer.is_empty());
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls[0].id, "call_9");
+        assert_eq!(result.tool_calls[0].function.name, "search");
+        assert_eq!(
+            result.tool_calls[0].function.arguments,
+            "{\"path\":\".\",\"pattern\":\"streaming\"}"
+        );
     }
 }
