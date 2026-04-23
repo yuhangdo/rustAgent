@@ -10,7 +10,7 @@ use futures::StreamExt;
 use serde_json::{json, Value};
 use tokio::time::timeout;
 
-use crate::api::{ApiClient, ChatMessage, ToolCall, ToolCallFunction, ToolDefinition};
+use crate::api::{ApiClient, ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
 use crate::config::Settings;
 use crate::streaming::{StreamSnapshot, StreamUpdate, StreamingAssembler};
 use crate::tools::{ToolError, ToolOutput, ToolRegistry};
@@ -50,6 +50,7 @@ pub struct AgentExecutionResult {
     pub reasoning: String,
     pub answer: String,
     pub iterations: usize,
+    pub usage_records: Vec<AgentUsageRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,14 +74,19 @@ pub enum AgentEvent {
         delta: String,
     },
     ToolCallRequested {
+        tool_call_id: String,
         tool_name: String,
+        input: Value,
         input_preview: String,
     },
     ToolCallCompleted {
+        tool_call_id: String,
         tool_name: String,
+        output: String,
         output_preview: String,
     },
     ToolCallFailed {
+        tool_call_id: String,
         tool_name: String,
         error_summary: String,
     },
@@ -100,6 +106,18 @@ pub trait AgentCancellation: Send + Sync {
     }
 }
 
+#[async_trait]
+pub trait AgentToolCallHook: Send + Sync {
+    async fn before_tool_call(
+        &self,
+        _tool_call_id: &str,
+        _tool_name: &str,
+        _input: &Value,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
 pub struct NoopAgentEventHandler;
 
 #[async_trait]
@@ -108,6 +126,11 @@ impl AgentEventHandler for NoopAgentEventHandler {}
 pub struct NoopAgentCancellation;
 
 impl AgentCancellation for NoopAgentCancellation {}
+
+pub struct NoopAgentToolCallHook;
+
+#[async_trait]
+impl AgentToolCallHook for NoopAgentToolCallHook {}
 
 pub struct AgentRuntime {
     client: ApiClient,
@@ -120,6 +143,15 @@ struct TurnResult {
     reasoning: String,
     answer: String,
     tool_calls: Vec<ToolCall>,
+    usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AgentUsageRecord {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
+    pub usage_missing: bool,
 }
 
 impl AgentRuntime {
@@ -138,6 +170,22 @@ impl AgentRuntime {
         event_handler: &dyn AgentEventHandler,
         cancellation: &dyn AgentCancellation,
     ) -> Result<AgentExecutionOutcome> {
+        self.execute_with_hook(
+            request,
+            event_handler,
+            cancellation,
+            &NoopAgentToolCallHook,
+        )
+        .await
+    }
+
+    pub async fn execute_with_hook(
+        &self,
+        request: AgentExecutionRequest,
+        event_handler: &dyn AgentEventHandler,
+        cancellation: &dyn AgentCancellation,
+        tool_call_hook: &dyn AgentToolCallHook,
+    ) -> Result<AgentExecutionOutcome> {
         let AgentExecutionRequest {
             system_prompt,
             history,
@@ -145,6 +193,7 @@ impl AgentRuntime {
             max_iterations: requested_max_iterations,
         } = request;
         let mut latest_reasoning = String::new();
+        let mut usage_records = Vec::new();
         let max_iterations = if requested_max_iterations == 0 {
             DEFAULT_MAX_ITERATIONS
         } else {
@@ -181,6 +230,8 @@ impl AgentRuntime {
                 latest_reasoning = turn_result.reasoning.clone();
             }
 
+            usage_records.push(turn_usage_record(turn_result.usage.as_ref()));
+
             let tool_calls = turn_result.tool_calls;
             if !tool_calls.is_empty() {
                 messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
@@ -194,10 +245,15 @@ impl AgentRuntime {
                     let parsed_arguments = parse_tool_arguments(&tool_call.function.arguments)?;
                     let normalized_arguments =
                         normalize_tool_input(&tool_name, parsed_arguments, &workspace_root);
+                    tool_call_hook
+                        .before_tool_call(&tool_call.id, &tool_name, &normalized_arguments)
+                        .await?;
 
                     event_handler
                         .on_event(AgentEvent::ToolCallRequested {
+                            tool_call_id: tool_call.id.clone(),
                             tool_name: tool_name.clone(),
+                            input: normalized_arguments.clone(),
                             input_preview: summarize_text(&normalized_arguments.to_string(), 280),
                         })
                         .await;
@@ -215,7 +271,9 @@ impl AgentRuntime {
                             ));
                             event_handler
                                 .on_event(AgentEvent::ToolCallCompleted {
+                                    tool_call_id: tool_call.id.clone(),
                                     tool_name,
+                                    output: tool_content.clone(),
                                     output_preview: summarize_text(&tool_content, 400),
                                 })
                                 .await;
@@ -232,6 +290,7 @@ impl AgentRuntime {
                             ));
                             event_handler
                                 .on_event(AgentEvent::ToolCallFailed {
+                                    tool_call_id: tool_call.id.clone(),
                                     tool_name,
                                     error_summary: format_tool_error(&error),
                                 })
@@ -260,6 +319,7 @@ impl AgentRuntime {
                 reasoning: latest_reasoning,
                 answer: final_answer,
                 iterations: iteration + 1,
+                usage_records,
             }));
         }
 
@@ -314,6 +374,7 @@ impl AgentRuntime {
                 .trim()
                 .to_string(),
             tool_calls: choice.message.tool_calls.clone().unwrap_or_default(),
+            usage: response.usage.clone(),
         })
     }
 
@@ -403,7 +464,23 @@ fn stream_snapshot_into_turn_result(snapshot: StreamSnapshot) -> Result<TurnResu
         reasoning: snapshot.reasoning_text,
         answer: snapshot.answer_text,
         tool_calls,
+        usage: snapshot.usage,
     })
+}
+
+fn turn_usage_record(usage: Option<&Usage>) -> AgentUsageRecord {
+    match usage {
+        Some(usage) => AgentUsageRecord {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            total_tokens: usage.total_tokens,
+            usage_missing: false,
+        },
+        None => AgentUsageRecord {
+            usage_missing: true,
+            ..AgentUsageRecord::default()
+        },
+    }
 }
 
 fn stream_tool_call_into_api_tool_call(
@@ -1404,6 +1481,7 @@ mod tests {
             answer_text: "hello from stream".to_string(),
             reasoning_text: "thinking".to_string(),
             tool_calls: Vec::new(),
+            usage: None,
             finish_reason: Some("stop".to_string()),
             completed: true,
         })
@@ -1425,6 +1503,7 @@ mod tests {
                 name: Some("search".to_string()),
                 arguments: "{\"path\":\".\",\"pattern\":\"streaming\"}".to_string(),
             }],
+            usage: None,
             finish_reason: Some("tool_calls".to_string()),
             completed: true,
         })

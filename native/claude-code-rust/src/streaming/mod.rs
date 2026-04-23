@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 
+use crate::api::Usage;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamToolCall {
     pub index: usize,
@@ -35,6 +37,7 @@ pub struct StreamSnapshot {
     pub answer_text: String,
     pub reasoning_text: String,
     pub tool_calls: Vec<StreamToolCall>,
+    pub usage: Option<Usage>,
     pub finish_reason: Option<String>,
     pub completed: bool,
 }
@@ -45,6 +48,7 @@ pub struct StreamingAssembler {
     answer_text: String,
     reasoning_text: String,
     tool_calls: BTreeMap<usize, StreamToolCall>,
+    usage: Option<Usage>,
     finish_reason: Option<String>,
     completed: bool,
 }
@@ -78,6 +82,7 @@ impl StreamingAssembler {
             answer_text: self.answer_text.clone(),
             reasoning_text: self.reasoning_text.clone(),
             tool_calls: self.tool_calls.values().cloned().collect(),
+            usage: self.usage.clone(),
             finish_reason: self.finish_reason.clone(),
             completed: self.completed,
         }
@@ -117,6 +122,9 @@ impl StreamingAssembler {
 
     fn process_openai_chunk(&mut self, value: &Value) -> Result<Vec<StreamUpdate>> {
         let mut updates = Vec::new();
+        if let Some(usage) = parse_openai_usage(value) {
+            self.usage = Some(usage);
+        }
         let choices = value
             .get("choices")
             .and_then(Value::as_array)
@@ -273,6 +281,9 @@ impl StreamingAssembler {
                 }
             }
             "message_delta" => {
+                if let Some(usage) = parse_anthropic_usage(value) {
+                    self.usage = Some(usage);
+                }
                 if let Some(stop_reason) = value
                     .get("delta")
                     .and_then(|delta| delta.get("stop_reason"))
@@ -404,6 +415,47 @@ fn has_meaningful_json(value: &Value) -> bool {
     }
 }
 
+fn parse_openai_usage(value: &Value) -> Option<Usage> {
+    value.get("usage").and_then(parse_usage_from_value)
+}
+
+fn parse_anthropic_usage(value: &Value) -> Option<Usage> {
+    value.get("usage")
+        .or_else(|| value.get("delta").and_then(|delta| delta.get("usage")))
+        .and_then(parse_usage_from_value)
+}
+
+fn parse_usage_from_value(value: &Value) -> Option<Usage> {
+    let prompt_tokens = value
+        .get("prompt_tokens")
+        .or_else(|| value.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let completion_tokens = value
+        .get("completion_tokens")
+        .or_else(|| value.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+    let total_tokens = value
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize);
+
+    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
+
+    let prompt_tokens = prompt_tokens.unwrap_or_default();
+    let completion_tokens = completion_tokens.unwrap_or_default();
+    let total_tokens = total_tokens.unwrap_or(prompt_tokens + completion_tokens);
+
+    Some(Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,6 +473,8 @@ data: {"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}
 data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{\"path\":\"src"}}]},"finish_reason":null}]}
 
 data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\",\"pattern\":\"chat\"}"}}],"content":"world"},"finish_reason":"tool_calls"}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":24,"total_tokens":144}}
 
 data: [DONE]
 
@@ -460,6 +514,14 @@ data: [DONE]
             snapshot.tool_calls[0].arguments,
             "{\"path\":\"src\",\"pattern\":\"chat\"}"
         );
+        assert_eq!(
+            snapshot.usage,
+            Some(Usage {
+                prompt_tokens: 120,
+                completion_tokens: 24,
+                total_tokens: 144,
+            })
+        );
         assert!(snapshot.completed);
     }
 
@@ -488,7 +550,7 @@ event: content_block_delta
 data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}
 
 event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":220,"output_tokens":44}}
 
 event: message_stop
 data: {"type":"message_stop"}
@@ -517,6 +579,14 @@ data: {"type":"message_stop"}
         assert_eq!(snapshot.reasoning_text, "Need to inspect files. ");
         assert_eq!(snapshot.answer_text, "Final answer");
         assert_eq!(snapshot.finish_reason.as_deref(), Some("tool_use"));
+        assert_eq!(
+            snapshot.usage,
+            Some(Usage {
+                prompt_tokens: 220,
+                completion_tokens: 44,
+                total_tokens: 264,
+            })
+        );
         assert!(snapshot.completed);
     }
 

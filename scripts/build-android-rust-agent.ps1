@@ -47,6 +47,32 @@ function Read-AndroidSdkDirFromLocalProperties {
     return $rawValue.Replace('\:', ':').Replace('\\', '\')
 }
 
+function Ensure-RustTargetInstalled {
+    param(
+        [string]$RustupPath,
+        [string]$CargoTarget
+    )
+
+    if (-not $RustupPath) {
+        return
+    }
+
+    $installedTargets = & $RustupPath target list --installed
+    if ($LASTEXITCODE -ne 0) {
+        throw "rustup target list failed with exit code $LASTEXITCODE."
+    }
+
+    if ($installedTargets -contains $CargoTarget) {
+        return
+    }
+
+    Write-Host "Rust target $CargoTarget is not installed. Installing with rustup..."
+    & $RustupPath target add $CargoTarget
+    if ($LASTEXITCODE -ne 0) {
+        throw "rustup target add $CargoTarget failed with exit code $LASTEXITCODE."
+    }
+}
+
 function Resolve-AndroidSdkDir {
     $candidates = @(
         $env:ANDROID_SDK_ROOT,
@@ -129,6 +155,19 @@ $targetConfig = switch ($Target) {
             Abi = "arm64-v8a"
             CargoTarget = "aarch64-linux-android"
             ClangExecutable = "aarch64-linux-android26-clang.cmd"
+            TargetEnvPrefix = "AARCH64_LINUX_ANDROID"
+            CcEnvName = "CC_aarch64_linux_android"
+            ArEnvName = "AR_aarch64_linux_android"
+        }
+    }
+    "x86_64" {
+        @{
+            Abi = "x86_64"
+            CargoTarget = "x86_64-linux-android"
+            ClangExecutable = "x86_64-linux-android26-clang.cmd"
+            TargetEnvPrefix = "X86_64_LINUX_ANDROID"
+            CcEnvName = "CC_x86_64_linux_android"
+            ArEnvName = "AR_x86_64_linux_android"
         }
     }
     default {
@@ -142,6 +181,10 @@ $cargoPath = Resolve-ExecutablePath "cargo" @(
 if (-not $cargoPath) {
     throw "cargo was not found. Install Rust or expose %USERPROFILE%\\.cargo\\bin to PATH."
 }
+$rustupPath = Resolve-ExecutablePath "rustup" @(
+    (Join-Path $env:USERPROFILE ".cargo\bin\rustup.exe")
+)
+Ensure-RustTargetInstalled -RustupPath $rustupPath -CargoTarget $targetConfig.CargoTarget
 
 $sdkDir = Resolve-AndroidSdkDir
 $ndkDir = Resolve-AndroidNdkDir -SdkDir $sdkDir
@@ -168,9 +211,9 @@ if (-not (Test-Path $targetAr)) {
 $cargoBinDir = Split-Path -Parent $cargoPath
 $env:PATH = "$llvmMingwBinDir;$cargoBinDir;$ndkBinDir;$env:PATH"
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER = $hostLinker
-$env:CC_aarch64_linux_android = $targetLinker
-$env:AR_aarch64_linux_android = $targetAr
-$env:CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER = $targetLinker
+Set-Item -Path "Env:$($targetConfig.CcEnvName)" -Value $targetLinker
+Set-Item -Path "Env:$($targetConfig.ArEnvName)" -Value $targetAr
+Set-Item -Path "Env:CARGO_TARGET_$($targetConfig.TargetEnvPrefix)_LINKER" -Value $targetLinker
 
 $profile = if ($Debug) { "debug" } else { "release" }
 $outDir = Join-Path $jniRoot $targetConfig.Abi

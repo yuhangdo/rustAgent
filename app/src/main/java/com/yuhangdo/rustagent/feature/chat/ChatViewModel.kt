@@ -249,6 +249,7 @@ class ChatViewModel(
             runtime.execute(
                 AgentRuntimeRequest(
                     runId = run.id,
+                    sessionId = sessionId,
                     triggerLabel = triggerLabel,
                     history = history,
                     settings = settings,

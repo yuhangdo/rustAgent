@@ -10,9 +10,11 @@ import com.yuhangdo.rustagent.model.RunEventType
 import com.yuhangdo.rustagent.model.summarizeReasoning
 import com.yuhangdo.rustagent.runtime.NativeRustRuntimeBridge
 import com.yuhangdo.rustagent.runtime.RustEmbeddedRuntimeBridge
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -210,7 +212,7 @@ class OpenAiCompatibleAgentRuntime(
         } catch (throwable: Throwable) {
             emit(AgentRuntimeEvent.RunUpdate(RunEventType.FAILED, throwable.message ?: "Unknown OpenAI-compatible runtime error."))
         }
-    }
+    }.flowOn(Dispatchers.IO)
 }
 
 class EmbeddedRustAgentRuntime(
@@ -236,6 +238,7 @@ class EmbeddedRustAgentRuntime(
         try {
             val port = nativeRustRuntimeBridge.ensureServerStarted(appStorageDir)
             val baseUrl = "http://127.0.0.1:$port/api"
+            awaitBridgeReady(baseUrl)
             val startResponse = postJson(
                 url = "$baseUrl/runs",
                 payload = request.toJson(),
@@ -288,13 +291,19 @@ class EmbeddedRustAgentRuntime(
                 }
             }
         } catch (throwable: Throwable) {
-            emit(AgentRuntimeEvent.RunUpdate(RunEventType.FAILED, throwable.message ?: "Unknown embedded runtime error."))
+            emit(
+                AgentRuntimeEvent.RunUpdate(
+                    RunEventType.FAILED,
+                    throwable.readableSummary("Unknown embedded runtime error."),
+                ),
+            )
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
     override suspend fun cancel(runId: String) {
         val port = nativeRustRuntimeBridge.ensureServerStarted(appStorageDir)
         val baseUrl = "http://127.0.0.1:$port/api"
+        awaitBridgeReady(baseUrl)
         okHttpClient.newCall(
             Request.Builder()
                 .url("$baseUrl/runs/$runId/cancel")
@@ -309,6 +318,7 @@ class EmbeddedRustAgentRuntime(
 
     private fun AgentRuntimeRequest.toJson(): JSONObject = JSONObject().apply {
         put("runId", runId)
+        put("sessionId", sessionId)
         put("triggerLabel", triggerLabel)
         put("history", JSONArray().apply {
             history.forEach { message ->
@@ -349,12 +359,43 @@ class EmbeddedRustAgentRuntime(
             .get()
             .build(),
     ).execute()
+
+    private suspend fun awaitBridgeReady(baseUrl: String) {
+        var lastFailure: Throwable? = null
+        repeat(12) { attempt ->
+            try {
+                getJson("$baseUrl/health").use { response ->
+                    if (response.isSuccessful) {
+                        return
+                    }
+                    lastFailure = IOException("Bridge health HTTP ${response.code}")
+                }
+            } catch (throwable: Throwable) {
+                lastFailure = throwable
+            }
+
+            delay(if (attempt < 3) 75 else 150)
+        }
+
+        throw IOException(
+            lastFailure?.readableSummary("Embedded runtime bridge did not become ready.")
+                ?: "Embedded runtime bridge did not become ready.",
+            lastFailure,
+        )
+    }
 }
 
 private data class RuntimeRunSnapshot(
+    val runId: String,
+    val sessionId: String,
     val status: String,
+    val activeModel: String,
     val reasoningContent: String,
     val answerContent: String,
+    val totalTokens: Int,
+    val totalCostUsd: Double,
+    val budgetState: RuntimeBudgetState,
+    val modelUsage: RuntimeSessionUsageTotals,
     val events: List<RuntimeRunEvent>,
 ) {
     companion object {
@@ -375,12 +416,82 @@ private data class RuntimeRunSnapshot(
                 }
             }
             return RuntimeRunSnapshot(
+                runId = json.optString("runId"),
+                sessionId = json.optString("sessionId"),
                 status = json.optString("status"),
+                activeModel = json.optString("activeModel"),
                 reasoningContent = json.optString("reasoningContent"),
                 answerContent = json.optString("answerContent"),
+                totalTokens = json.optInt("totalTokens"),
+                totalCostUsd = json.optDouble("totalCostUsd"),
+                budgetState = RuntimeBudgetState.fromJson(json.optJSONObject("budgetState")),
+                modelUsage = RuntimeSessionUsageTotals.fromJson(json.optJSONObject("modelUsage")),
                 events = events,
             )
         }
+    }
+}
+
+private data class RuntimeBudgetState(
+    val softBudgetUsd: Double?,
+    val hardBudgetUsd: Double?,
+    val warningEmitted: Boolean,
+    val hardLimitReached: Boolean,
+    val totalCostUsd: Double,
+) {
+    companion object {
+        fun fromJson(json: JSONObject?): RuntimeBudgetState = RuntimeBudgetState(
+            softBudgetUsd = json.optionalDouble("soft_budget_usd"),
+            hardBudgetUsd = json.optionalDouble("hard_budget_usd"),
+            warningEmitted = json?.optBoolean("warning_emitted") == true,
+            hardLimitReached = json?.optBoolean("hard_limit_reached") == true,
+            totalCostUsd = json?.optDouble("total_cost_usd") ?: 0.0,
+        )
+    }
+}
+
+private data class RuntimeSessionUsageTotals(
+    val totalTokens: Int,
+    val totalCostUsd: Double,
+    val modelUsage: Map<String, RuntimeModelUsage>,
+) {
+    companion object {
+        fun fromJson(json: JSONObject?): RuntimeSessionUsageTotals {
+            val modelUsageJson = json?.optJSONObject("model_usage")
+            val modelUsage = buildMap {
+                if (modelUsageJson != null) {
+                    val keys = modelUsageJson.keys()
+                    while (keys.hasNext()) {
+                        val key = keys.next()
+                        put(key, RuntimeModelUsage.fromJson(modelUsageJson.optJSONObject(key)))
+                    }
+                }
+            }
+
+            return RuntimeSessionUsageTotals(
+                totalTokens = json?.optInt("total_tokens") ?: 0,
+                totalCostUsd = json?.optDouble("total_cost_usd") ?: 0.0,
+                modelUsage = modelUsage,
+            )
+        }
+    }
+}
+
+private data class RuntimeModelUsage(
+    val promptTokens: Int,
+    val completionTokens: Int,
+    val totalTokens: Int,
+    val totalCostUsd: Double,
+    val callCount: Int,
+) {
+    companion object {
+        fun fromJson(json: JSONObject?): RuntimeModelUsage = RuntimeModelUsage(
+            promptTokens = json?.optInt("prompt_tokens") ?: 0,
+            completionTokens = json?.optInt("completion_tokens") ?: 0,
+            totalTokens = json?.optInt("total_tokens") ?: 0,
+            totalCostUsd = json?.optDouble("total_cost_usd") ?: 0.0,
+            callCount = json?.optInt("call_count") ?: 0,
+        )
     }
 }
 
@@ -389,6 +500,16 @@ private data class RuntimeRunEvent(
     val title: String,
     val details: String,
 )
+
+private fun Throwable.readableSummary(fallback: String): String {
+    val className = this::class.java.simpleName.ifBlank { "RuntimeError" }
+    val detail = message?.trim().orEmpty()
+    return if (detail.isBlank()) {
+        "$fallback ($className)"
+    } else {
+        "$className: $detail"
+    }
+}
 
 private fun String.toRunEventType(): RunEventType = RunEventType.entries.firstOrNull { it.name == this }
     ?: RunEventType.FAILED
@@ -425,6 +546,13 @@ private fun JSONObject.extractAnswer(): String {
             append(part.optString("text"))
         }
         }.trim()
+}
+
+private fun JSONObject?.optionalDouble(key: String): Double? {
+    if (this == null || isNull(key)) {
+        return null
+    }
+    return optDouble(key)
 }
 
 private fun buildChatCompletionsUrl(baseUrl: String): String {

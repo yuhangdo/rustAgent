@@ -21,6 +21,20 @@ resolve_cargo() {
   return 1
 }
 
+resolve_rustup() {
+  if command -v rustup >/dev/null 2>&1; then
+    command -v rustup
+    return 0
+  fi
+
+  if [ -x "$HOME/.cargo/bin/rustup" ]; then
+    printf '%s\n' "$HOME/.cargo/bin/rustup"
+    return 0
+  fi
+
+  return 1
+}
+
 read_android_sdk_dir_from_local_properties() {
   local local_properties_path="$REPO_ROOT/local.properties"
   [ -f "$local_properties_path" ] || return 1
@@ -70,6 +84,17 @@ case "$TARGET" in
     ABI_DIR="arm64-v8a"
     CARGO_TARGET="aarch64-linux-android"
     CLANG_EXECUTABLE="aarch64-linux-android26-clang"
+    CC_ENV_NAME="CC_aarch64_linux_android"
+    AR_ENV_NAME="AR_aarch64_linux_android"
+    CARGO_LINKER_ENV="CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"
+    ;;
+  x86_64)
+    ABI_DIR="x86_64"
+    CARGO_TARGET="x86_64-linux-android"
+    CLANG_EXECUTABLE="x86_64-linux-android26-clang"
+    CC_ENV_NAME="CC_x86_64_linux_android"
+    AR_ENV_NAME="AR_x86_64_linux_android"
+    CARGO_LINKER_ENV="CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER"
     ;;
   *)
     echo "Unsupported Android ABI target: $TARGET" >&2
@@ -101,6 +126,11 @@ CARGO_PATH="$(resolve_cargo)" || {
   echo "cargo was not found. Install Rust or expose ~/.cargo/bin to PATH." >&2
   exit 1
 }
+RUSTUP_PATH="$(resolve_rustup 2>/dev/null || true)"
+if [ -n "$RUSTUP_PATH" ] && ! "$RUSTUP_PATH" target list --installed | grep -qx "$CARGO_TARGET"; then
+  echo "Rust target $CARGO_TARGET is not installed. Installing with rustup..."
+  "$RUSTUP_PATH" target add "$CARGO_TARGET"
+fi
 
 SDK_DIR="$(resolve_android_sdk_dir)" || {
   echo "Android SDK was not found. Set ANDROID_SDK_ROOT/ANDROID_HOME or configure sdk.dir in local.properties." >&2
@@ -134,9 +164,9 @@ OUT_DIR="$JNI_ROOT/$ABI_DIR"
 mkdir -p "$OUT_DIR"
 
 export PATH="$(dirname "$CARGO_PATH"):$NDK_BIN_DIR:$PATH"
-export CC_aarch64_linux_android="$TARGET_LINKER"
-export AR_aarch64_linux_android="$TARGET_AR"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$TARGET_LINKER"
+export "$CC_ENV_NAME=$TARGET_LINKER"
+export "$AR_ENV_NAME=$TARGET_AR"
+export "$CARGO_LINKER_ENV=$TARGET_LINKER"
 
 cd "$CRATE_DIR"
 "$CARGO_PATH" build --lib --target "$CARGO_TARGET" --release --no-default-features --features mobile-bridge

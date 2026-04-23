@@ -262,7 +262,7 @@ pub struct Choice {
     pub finish_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Usage {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,

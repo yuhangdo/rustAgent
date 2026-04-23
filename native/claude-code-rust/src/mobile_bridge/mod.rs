@@ -16,17 +16,17 @@ use serde::{Deserialize, Serialize};
 use tokio::runtime::Runtime;
 use tokio::sync::RwLock;
 
-use crate::agent_runtime::{
-    AgentCancellation, AgentEvent, AgentEventHandler, AgentExecutionOutcome, AgentExecutionRequest,
-    AgentRuntime,
-};
+use crate::agent_runtime::{AgentCancellation, AgentEvent, AgentEventHandler};
 use crate::api::ChatMessage;
 use crate::config::Settings;
+use crate::query_engine::{BudgetState, QueryEngine, QuerySubmitRequest, SessionUsageTotals};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeRunRequest {
     pub run_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
     pub trigger_label: String,
     pub history: Vec<BridgeMessage>,
     pub settings: BridgeRequestSettings,
@@ -67,6 +67,9 @@ pub enum BridgeEventType {
     Started,
     RequestBuilt,
     ProviderSelected,
+    ModelSwitched,
+    BudgetWarning,
+    BudgetExhausted,
     ReasoningSummary,
     ToolCallRequested,
     ToolCallCompleted,
@@ -91,9 +94,15 @@ pub struct BridgeRunEvent {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeRunSnapshot {
     pub run_id: String,
+    pub session_id: String,
     pub status: BridgeRunStatus,
+    pub active_model: String,
     pub reasoning_content: String,
     pub answer_content: String,
+    pub total_tokens: usize,
+    pub total_cost_usd: f64,
+    pub budget_state: BudgetState,
+    pub model_usage: SessionUsageTotals,
     pub error_summary: Option<String>,
     pub events: Vec<BridgeRunEvent>,
 }
@@ -109,6 +118,7 @@ struct HealthResponse {
 pub struct MobileBridgeServer {
     runs: Arc<DashMap<String, BridgeRunHandle>>,
     default_workspace_root: Arc<PathBuf>,
+    query_engine: Arc<QueryEngine>,
 }
 
 #[derive(Clone)]
@@ -124,9 +134,16 @@ impl MobileBridgeServer {
     }
 
     pub fn with_workspace_root(default_workspace_root: impl Into<PathBuf>) -> Self {
+        let default_workspace_root = default_workspace_root.into();
+        let query_engine_root = default_workspace_root
+            .join(".claude-code")
+            .join("query-engine")
+            .join("sessions");
+
         Self {
             runs: Arc::new(DashMap::new()),
-            default_workspace_root: Arc::new(default_workspace_root.into()),
+            default_workspace_root: Arc::new(default_workspace_root),
+            query_engine: Arc::new(QueryEngine::with_root(query_engine_root)),
         }
     }
 
@@ -135,8 +152,13 @@ impl MobileBridgeServer {
             return Err(anyhow!("Run already exists: {}", request.run_id));
         }
 
+        let session_id = request
+            .session_id
+            .clone()
+            .unwrap_or_else(|| request.run_id.clone());
+
         let handle = BridgeRunHandle {
-            state: Arc::new(RwLock::new(BridgeRunState::new(&request.run_id))),
+            state: Arc::new(RwLock::new(BridgeRunState::new(&request.run_id, &session_id))),
             cancel_requested: Arc::new(AtomicBool::new(false)),
         };
         self.runs.insert(request.run_id.clone(), handle);
@@ -171,6 +193,10 @@ impl MobileBridgeServer {
     async fn process_run(&self, request: BridgeRunRequest) {
         let run_id = request.run_id.clone();
         let workspace_root = self.resolve_workspace_root(&request);
+        let session_id = request
+            .session_id
+            .clone()
+            .unwrap_or_else(|| request.run_id.clone());
 
         self.append_event(
             &run_id,
@@ -201,18 +227,33 @@ impl MobileBridgeServer {
             .execute_agent_run(&request, &run_id, workspace_root)
             .await
         {
-            Ok(AgentExecutionOutcome::Completed(result)) => {
-                self.mark_completed(
-                    &run_id,
-                    &format!(
-                        "Completed in mobile bridge runtime after {} model step(s).",
-                        result.iterations
-                    ),
-                )
-                .await;
-            }
-            Ok(AgentExecutionOutcome::Cancelled) => {
-                self.mark_cancelled(&run_id, "Cancelled from the UI.").await;
+            Ok(session_snapshot) => {
+                self.apply_session_snapshot(&run_id, &session_snapshot).await;
+                match session_snapshot.last_run_status {
+                    crate::query_engine::QueryRunStatus::Cancelled => {
+                        self.mark_cancelled(&run_id, "Cancelled from the UI.").await;
+                    }
+                    crate::query_engine::QueryRunStatus::Failed => {
+                        self.mark_failed(
+                            &run_id,
+                            session_snapshot
+                                .last_error
+                                .as_deref()
+                                .unwrap_or("Query session failed."),
+                        )
+                        .await;
+                    }
+                    _ => {
+                        self.mark_completed(
+                            &run_id,
+                            &format!(
+                                "Completed in session {} using {}.",
+                                session_id, session_snapshot.active_model
+                            ),
+                        )
+                        .await;
+                    }
+                }
             }
             Err(error) => {
                 self.mark_failed(&run_id, &error.to_string()).await;
@@ -225,13 +266,13 @@ impl MobileBridgeServer {
         request: &BridgeRunRequest,
         run_id: &str,
         workspace_root: PathBuf,
-    ) -> Result<AgentExecutionOutcome> {
+    ) -> Result<crate::query_engine::QuerySessionSnapshot> {
         if request.settings.base_url.trim().is_empty() || request.settings.api_key.trim().is_empty()
         {
             return Err(anyhow!("Embedded runtime needs both base URL and API key."));
         }
 
-        let runtime = AgentRuntime::new(build_settings(&request.settings, workspace_root.clone()));
+        let settings = build_settings(&request.settings, workspace_root.clone());
         let event_sink = BridgeEventSink {
             server: self.clone(),
             run_id: run_id.to_string(),
@@ -244,9 +285,14 @@ impl MobileBridgeServer {
                 .ok_or_else(|| anyhow!("Run not found: {}", run_id))?,
         };
 
-        runtime
-            .execute(
-                AgentExecutionRequest {
+        self.query_engine
+            .submit_message(
+                QuerySubmitRequest {
+                    run_id: run_id.to_string(),
+                    session_id: request
+                        .session_id
+                        .clone()
+                        .unwrap_or_else(|| request.run_id.clone()),
                     system_prompt: request.settings.system_prompt.clone(),
                     history: request
                         .history
@@ -259,6 +305,7 @@ impl MobileBridgeServer {
                             tool_call_id: None,
                         })
                         .collect(),
+                    settings,
                     workspace_root,
                     max_iterations: request.max_iterations.unwrap_or(0),
                 },
@@ -306,6 +353,83 @@ impl MobileBridgeServer {
     async fn update_answer(&self, run_id: &str, answer_content: String) {
         if let Some(handle) = self.runs.get(run_id).map(|entry| entry.clone()) {
             handle.state.write().await.answer_content = answer_content;
+        }
+    }
+
+    async fn apply_session_snapshot(
+        &self,
+        run_id: &str,
+        session_snapshot: &crate::query_engine::QuerySessionSnapshot,
+    ) {
+        if let Some(handle) = self.runs.get(run_id).map(|entry| entry.clone()) {
+            let mut model_switch_details = None;
+            let mut budget_warning_details = None;
+            let mut budget_exhausted_details = None;
+
+            {
+                let mut guard = handle.state.write().await;
+                if !guard.active_model.is_empty() && guard.active_model != session_snapshot.active_model {
+                    model_switch_details = Some(format!(
+                        "Session switched models from {} to {}.",
+                        guard.active_model, session_snapshot.active_model
+                    ));
+                }
+
+                if !guard.budget_state.warning_emitted && session_snapshot.budget_state.warning_emitted {
+                    budget_warning_details = Some(format_budget_details(
+                        "Soft budget warning",
+                        session_snapshot.budget_state.total_cost_usd,
+                        session_snapshot.budget_state.soft_budget_usd,
+                    ));
+                }
+
+                if !guard.budget_state.hard_limit_reached
+                    && session_snapshot.budget_state.hard_limit_reached
+                {
+                    budget_exhausted_details = Some(format_budget_details(
+                        "Budget exhausted",
+                        session_snapshot.budget_state.total_cost_usd,
+                        session_snapshot.budget_state.hard_budget_usd,
+                    ));
+                }
+
+                guard.session_id = session_snapshot.session_id.clone();
+                guard.active_model = session_snapshot.active_model.clone();
+                guard.total_tokens = session_snapshot.total_tokens;
+                guard.total_cost_usd = session_snapshot.total_cost_usd;
+                guard.budget_state = session_snapshot.budget_state.clone();
+                guard.model_usage = session_snapshot.model_usage.clone();
+            }
+
+            if let Some(details) = model_switch_details {
+                self.append_event(
+                    run_id,
+                    BridgeEventType::ModelSwitched,
+                    "Model Switched",
+                    details,
+                )
+                .await;
+            }
+
+            if let Some(details) = budget_warning_details {
+                self.append_event(
+                    run_id,
+                    BridgeEventType::BudgetWarning,
+                    "Budget Warning",
+                    details,
+                )
+                .await;
+            }
+
+            if let Some(details) = budget_exhausted_details {
+                self.append_event(
+                    run_id,
+                    BridgeEventType::BudgetExhausted,
+                    "Budget Exhausted",
+                    details,
+                )
+                .await;
+            }
         }
     }
 
@@ -380,20 +504,32 @@ impl Default for MobileBridgeServer {
 
 struct BridgeRunState {
     run_id: String,
+    session_id: String,
     status: BridgeRunStatus,
+    active_model: String,
     reasoning_content: String,
     answer_content: String,
+    total_tokens: usize,
+    total_cost_usd: f64,
+    budget_state: BudgetState,
+    model_usage: SessionUsageTotals,
     error_summary: Option<String>,
     events: Vec<BridgeRunEvent>,
 }
 
 impl BridgeRunState {
-    fn new(run_id: &str) -> Self {
+    fn new(run_id: &str, session_id: &str) -> Self {
         Self {
             run_id: run_id.to_string(),
+            session_id: session_id.to_string(),
             status: BridgeRunStatus::Running,
+            active_model: String::new(),
             reasoning_content: String::new(),
             answer_content: String::new(),
+            total_tokens: 0,
+            total_cost_usd: 0.0,
+            budget_state: BudgetState::default(),
+            model_usage: SessionUsageTotals::default(),
             error_summary: None,
             events: Vec::new(),
         }
@@ -402,9 +538,15 @@ impl BridgeRunState {
     fn snapshot(&self) -> BridgeRunSnapshot {
         BridgeRunSnapshot {
             run_id: self.run_id.clone(),
+            session_id: self.session_id.clone(),
             status: self.status.clone(),
+            active_model: self.active_model.clone(),
             reasoning_content: self.reasoning_content.clone(),
             answer_content: self.answer_content.clone(),
+            total_tokens: self.total_tokens,
+            total_cost_usd: self.total_cost_usd,
+            budget_state: self.budget_state.clone(),
+            model_usage: self.model_usage.clone(),
             error_summary: self.error_summary.clone(),
             events: self.events.clone(),
         }
@@ -437,6 +579,7 @@ impl AgentEventHandler for BridgeEventSink {
             AgentEvent::ToolCallRequested {
                 tool_name,
                 input_preview,
+                ..
             } => {
                 self.server
                     .append_event(
@@ -450,6 +593,7 @@ impl AgentEventHandler for BridgeEventSink {
             AgentEvent::ToolCallCompleted {
                 tool_name,
                 output_preview,
+                ..
             } => {
                 self.server
                     .append_event(
@@ -463,6 +607,7 @@ impl AgentEventHandler for BridgeEventSink {
             AgentEvent::ToolCallFailed {
                 tool_name,
                 error_summary,
+                ..
             } => {
                 self.server
                     .append_event(
@@ -584,6 +729,16 @@ fn trim_for_event(value: &str, max_chars: usize) -> String {
     }
 }
 
+fn format_budget_details(label: &str, total_cost_usd: f64, threshold_usd: Option<f64>) -> String {
+    match threshold_usd {
+        Some(threshold) => format!(
+            "{} at ${:.6} total cost (threshold ${:.6}).",
+            label, total_cost_usd, threshold
+        ),
+        None => format!("{} at ${:.6} total cost.", label, total_cost_usd),
+    }
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -663,12 +818,13 @@ mod tests {
 
     #[test]
     fn failed_snapshot_uses_agent_prefix() {
-        let mut state = BridgeRunState::new("run-1");
+        let mut state = BridgeRunState::new("run-1", "session-1");
         state.status = BridgeRunStatus::Failed;
         state.error_summary = Some("Runtime offline".to_string());
         state.answer_content = "Agent run failed: Runtime offline".to_string();
 
         let snapshot = state.snapshot();
+        assert_eq!(snapshot.session_id, "session-1");
         assert_eq!(snapshot.status, BridgeRunStatus::Failed);
         assert_eq!(snapshot.error_summary.as_deref(), Some("Runtime offline"));
         assert_eq!(snapshot.answer_content, "Agent run failed: Runtime offline");

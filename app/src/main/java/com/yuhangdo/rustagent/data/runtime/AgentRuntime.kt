@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.Flow
 
 data class AgentRuntimeRequest(
     val runId: String,
+    val sessionId: String,
     val triggerLabel: String,
     val history: List<ChatMessage>,
     val settings: ProviderSettings,

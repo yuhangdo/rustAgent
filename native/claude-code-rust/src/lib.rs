@@ -25,6 +25,7 @@ pub mod memory;
 #[cfg(feature = "mobile-bridge")]
 pub mod mobile_bridge;
 pub mod plugins;
+pub mod query_engine;
 pub mod services;
 pub mod session;
 pub mod skills;
@@ -54,6 +55,11 @@ pub use config::Settings;
 pub use mcp::McpManager;
 pub use memory::MemoryManager;
 pub use plugins::PluginManager;
+pub use query_engine::{
+    BudgetDecision, BudgetState, BudgetTracker, FileHistoryStore, ModelUsage, QueryEngine,
+    QueryRunStatus, QuerySessionSnapshot, SessionUsageTotals, TranscriptEvent, TranscriptStore,
+    UsageRecord,
+};
 pub use skills::{
     Skill, SkillCategory, SkillContext, SkillError, SkillExecutor, SkillParams, SkillRegistry,
     SkillResult,
