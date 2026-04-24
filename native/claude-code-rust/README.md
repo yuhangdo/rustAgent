@@ -31,7 +31,7 @@ of the current app workflow, including:
 The Android app builds this crate as an embedded library with:
 
 ```bash
-cargo build --lib --target aarch64-linux-android --no-default-features --features mobile-bridge
+cargo rustc --lib --target aarch64-linux-android --no-default-features --features mobile-bridge -- --crate-type cdylib
 ```
 
 From the repo root you normally use one of these entry points instead:

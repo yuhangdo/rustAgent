@@ -222,11 +222,13 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 Push-Location $crateDir
 try {
     $cargoArgs = @(
-        "build",
+        "rustc",
         "--lib",
         "--target", $targetConfig.CargoTarget,
         "--no-default-features",
-        "--features", "mobile-bridge"
+        "--features", "mobile-bridge",
+        "--",
+        "--crate-type", "cdylib"
     )
 
     if (-not $Debug) {

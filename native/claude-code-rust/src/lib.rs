@@ -25,6 +25,7 @@ pub mod memory;
 #[cfg(feature = "mobile-bridge")]
 pub mod mobile_bridge;
 pub mod plugins;
+pub mod prompting;
 pub mod query_engine;
 pub mod services;
 pub mod session;
@@ -55,6 +56,11 @@ pub use config::Settings;
 pub use mcp::McpManager;
 pub use memory::MemoryManager;
 pub use plugins::PluginManager;
+pub use prompting::{
+    PromptAssembly, PromptBudget, PromptBuildRequest, PromptBuilder, PromptCacheScope,
+    PromptSection, PromptSectionRole, PromptSectionSource, PromptTrimReport, RenderedPrompt,
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+};
 pub use query_engine::{
     BudgetDecision, BudgetState, BudgetTracker, FileHistoryStore, ModelUsage, QueryEngine,
     QueryRunStatus, QuerySessionSnapshot, SessionUsageTotals, TranscriptEvent, TranscriptStore,

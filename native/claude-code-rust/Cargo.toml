@@ -7,7 +7,7 @@ license = "MIT"
 repository = "https://github.com/lorryjovens-hub/claude-code-rust"
 
 [lib]
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [dependencies]
 # CLI
