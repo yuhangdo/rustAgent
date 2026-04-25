@@ -124,6 +124,7 @@ impl QueryEngine {
 
         let runtime = AgentRuntime::new(request.settings.clone());
         let transcript_store = self.transcript_store(&request.session_id);
+        let already_surfaced_memory_paths = transcript_store.surfaced_memory_paths().await?;
         let file_history = self.file_history_store();
         let turn_id = request.run_id.clone();
         let transcript_handler = PersistingEventHandler {
@@ -145,6 +146,7 @@ impl QueryEngine {
                     system_prompt: request.system_prompt,
                     history: session.messages.clone(),
                     workspace_root: request.workspace_root.clone(),
+                    already_surfaced_memory_paths,
                     max_iterations: request.max_iterations,
                 },
                 &transcript_handler,
@@ -626,6 +628,17 @@ impl AgentEventHandler for PersistingEventHandler<'_> {
                             call_id: tool_call_id.clone(),
                             tool_name: tool_name.clone(),
                             error_summary: error_summary.clone(),
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::MemorySurfaced { paths } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::MemorySurfaced {
+                            paths: paths.clone(),
                         },
                     )
                     .await;

@@ -1,13 +1,23 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use walkdir::WalkDir;
 
 use crate::api::{ChatMessage, ToolDefinition};
 
 const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 32_000;
 const DEFAULT_RECENT_MESSAGE_COUNT: usize = 8;
 const MAX_PROJECT_CONTEXT_DOC_CHARS: usize = 4_000;
+const MAX_PROJECT_MEMORY_INDEX_BYTES: usize = 25_000;
+const MAX_PROJECT_MEMORY_INDEX_LINES: usize = 200;
+const MAX_RELEVANT_PROJECT_MEMORY_CHARS: usize = 12_000;
+const MAX_RELEVANT_PROJECT_MEMORY_FILES: usize = 5;
+const MAX_RECENT_TOOLS: usize = 8;
 const MAX_COMPACTED_TOOL_MESSAGE_CHARS: usize = 640;
 const MAX_COMPACTED_TEXT_MESSAGE_CHARS: usize = 960;
 
@@ -37,6 +47,8 @@ pub enum PromptSectionSource {
     DirectoryInstruction,
     RuntimeContext,
     ContextTrimNotice,
+    ProjectMemoryIndex,
+    RelevantProjectMemory,
     GlobalMemory,
     WorkspaceMemory,
     DirectoryMemory,
@@ -98,6 +110,7 @@ pub struct PromptAssembly {
     pub history_messages: Vec<ChatMessage>,
     pub dynamic_boundary_index: usize,
     pub trim_report: PromptTrimReport,
+    pub surfaced_memory_paths: Vec<String>,
 }
 
 impl PromptAssembly {
@@ -191,88 +204,712 @@ pub struct PromptBuildRequest {
     pub entrypoint: String,
     pub version_fingerprint: Option<String>,
     pub global_config_root: Option<PathBuf>,
+    pub memory_enabled: bool,
+    pub auto_memory_directory: Option<PathBuf>,
+    pub already_surfaced_memory_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectMemoryCandidate {
+    pub path: String,
+    pub name: Option<String>,
+    pub description: String,
+    pub memory_type: Option<String>,
+    pub mtime_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectMemorySelectionQuery {
+    pub query: String,
+    pub memory_index_excerpt: Option<String>,
+    pub candidates: Vec<ProjectMemoryCandidate>,
+    pub recent_tools: Vec<String>,
+    pub already_surfaced_memory_paths: Vec<String>,
+}
+
+#[async_trait]
+pub trait ProjectMemorySelector: Send + Sync {
+    async fn select(&self, query: ProjectMemorySelectionQuery) -> Result<Vec<String>>;
 }
 
 pub struct PromptBuilder;
 
 impl PromptBuilder {
     pub fn build(request: PromptBuildRequest) -> Result<PromptAssembly> {
-        let budget = normalize_budget(request.budget);
-        let current_working_dir = request
-            .current_working_dir
-            .clone()
-            .filter(|path| path.starts_with(&request.workspace_root))
-            .unwrap_or_else(|| request.workspace_root.clone());
-        let memory_policy = resolve_memory_policy(&request.history);
-        let prompt_documents = load_prompt_documents(
-            &request.workspace_root,
-            &current_working_dir,
-            request.global_config_root.as_deref(),
-        );
-        let tool_definition_tokens = estimate_tool_definition_tokens(&request.tool_definitions);
-        let (mut trimmed_history, mut trim_report) =
-            compact_history_messages(request.history, budget.recent_message_count);
-        let static_system_sections = build_static_system_sections(
-            &request.base_system_prompt,
-            &request.workspace_root,
-            &current_working_dir,
-            &request.entrypoint,
-            request.version_fingerprint.as_deref(),
-            &prompt_documents,
-        );
-        let dynamic_boundary_index = static_system_sections.len();
-        let project_memory_sections = if memory_policy == MemoryPolicy::Use {
-            build_project_memory_sections(&prompt_documents)
-        } else {
-            Vec::new()
-        };
-        let mut dropped_messages = Vec::new();
-        let stabilization_passes = trimmed_history.len().saturating_add(2).max(2);
+        let project_memory_resolution = resolve_project_memory_resolution_sync(&request)?;
+        build_prompt_assembly(request, project_memory_resolution)
+    }
 
-        for _ in 0..stabilization_passes {
-            let system_sections = build_system_sections(
-                &static_system_sections,
-                &request.workspace_root,
-                &current_working_dir,
-                &trim_report,
-            );
-            let user_context_sections = build_user_context_sections(
-                &project_memory_sections,
-                &dropped_messages,
-                &trim_report,
-                trimmed_history.len(),
-                memory_policy,
-            );
-            let history_budget = available_history_tokens(
-                budget,
-                estimate_sections_tokens(&system_sections),
-                tool_definition_tokens,
-                render_prepended_user_context_message(&user_context_sections)
-                    .as_ref()
-                    .map(estimate_message_tokens)
-                    .unwrap_or_default(),
-            );
-            let trim_result = trim_history_to_budget(
-                trimmed_history,
-                history_budget,
-                budget.recent_message_count,
-            );
+    pub async fn build_with_selector(
+        request: PromptBuildRequest,
+        selector: Option<&dyn ProjectMemorySelector>,
+    ) -> Result<PromptAssembly> {
+        let project_memory_resolution =
+            resolve_project_memory_resolution_async(&request, selector).await?;
+        build_prompt_assembly(request, project_memory_resolution)
+    }
+}
 
-            if trim_result.report.dropped_message_count == 0 {
-                return Ok(PromptAssembly {
-                    system_sections,
-                    user_context_sections,
-                    history_messages: trim_result.history,
-                    dynamic_boundary_index,
-                    trim_report,
-                });
+#[derive(Debug, Clone)]
+struct ProjectMemoryStore {
+    index_excerpt: Option<String>,
+    candidates: Vec<ProjectMemoryDocument>,
+}
+
+fn resolve_project_memory_resolution_sync(
+    request: &PromptBuildRequest,
+) -> Result<ProjectMemoryResolution> {
+    let store = match load_project_memory_store(request)? {
+        Some(store) => store,
+        None => return Ok(ProjectMemoryResolution::default()),
+    };
+    let recent_tools = collect_recent_tools(&request.history);
+    let selection_query = build_project_memory_selection_query(request, &store, &recent_tools);
+    let selected_paths = select_relevant_project_memory_paths_heuristic(&selection_query);
+    Ok(build_project_memory_resolution(store, selected_paths))
+}
+
+async fn resolve_project_memory_resolution_async(
+    request: &PromptBuildRequest,
+    selector: Option<&dyn ProjectMemorySelector>,
+) -> Result<ProjectMemoryResolution> {
+    let store = match load_project_memory_store(request)? {
+        Some(store) => store,
+        None => return Ok(ProjectMemoryResolution::default()),
+    };
+    let recent_tools = collect_recent_tools(&request.history);
+    let selection_query = build_project_memory_selection_query(request, &store, &recent_tools);
+    let selected_paths = if selection_query.candidates.is_empty() {
+        Vec::new()
+    } else if let Some(selector) = selector {
+        match selector.select(selection_query.clone()).await {
+            Ok(paths) => {
+                normalize_selected_project_memory_paths(paths, &selection_query.candidates)
             }
+            Err(_) => select_relevant_project_memory_paths_heuristic(&selection_query),
+        }
+    } else {
+        select_relevant_project_memory_paths_heuristic(&selection_query)
+    };
+    Ok(build_project_memory_resolution(store, selected_paths))
+}
 
-            trim_report.merge(trim_result.report);
-            dropped_messages.extend(trim_result.dropped_messages);
-            trimmed_history = trim_result.history;
+fn build_project_memory_resolution(
+    store: ProjectMemoryStore,
+    selected_paths: Vec<String>,
+) -> ProjectMemoryResolution {
+    let ProjectMemoryStore {
+        index_excerpt,
+        candidates,
+    } = store;
+    let selected_path_set = selected_paths.iter().cloned().collect::<HashSet<_>>();
+    let relevant_documents = candidates
+        .into_iter()
+        .filter(|document| selected_path_set.contains(&document.relative_path))
+        .collect::<Vec<_>>();
+    let bundle = ProjectMemoryBundle {
+        index_excerpt,
+        relevant_documents,
+    };
+
+    ProjectMemoryResolution {
+        sections: build_project_memory_sections_from_bundle(&bundle),
+        surfaced_memory_paths: selected_paths,
+    }
+}
+
+fn load_project_memory_store(request: &PromptBuildRequest) -> Result<Option<ProjectMemoryStore>> {
+    if !request.memory_enabled {
+        return Ok(None);
+    }
+
+    let Some(memory_dir) = resolve_project_memory_directory(request) else {
+        return Ok(None);
+    };
+
+    if !memory_dir.is_dir() {
+        return Ok(None);
+    }
+
+    let index_excerpt = load_project_memory_index_excerpt(&memory_dir.join("MEMORY.md"))?;
+    let candidates = load_project_memory_documents(&memory_dir)?;
+    if index_excerpt.is_none() && candidates.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(ProjectMemoryStore {
+        index_excerpt,
+        candidates,
+    }))
+}
+
+fn resolve_project_memory_directory(request: &PromptBuildRequest) -> Option<PathBuf> {
+    let candidates = [
+        std::env::var_os("CLAUDE_COWORK_MEMORY_PATH_OVERRIDE").map(PathBuf::from),
+        request.auto_memory_directory.clone(),
+        default_project_memory_directory(request),
+    ];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| validate_project_memory_directory(candidate))
+}
+
+fn validate_project_memory_directory(candidate: PathBuf) -> Option<PathBuf> {
+    let as_string = candidate.to_string_lossy();
+    if as_string.contains('\0') || as_string.starts_with("\\\\") {
+        return None;
+    }
+    if !candidate.is_absolute() {
+        return None;
+    }
+    if candidate.parent().is_none() {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn default_project_memory_directory(request: &PromptBuildRequest) -> Option<PathBuf> {
+    let current_working_dir = request
+        .current_working_dir
+        .as_deref()
+        .filter(|path| path.starts_with(&request.workspace_root))
+        .unwrap_or(&request.workspace_root);
+    let canonical_git_root = find_canonical_git_root(current_working_dir)?;
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".claude")
+            .join("projects")
+            .join(sanitize_project_memory_slug(&canonical_git_root))
+            .join("memory"),
+    )
+}
+
+fn find_canonical_git_root(start: &Path) -> Option<PathBuf> {
+    for directory in start.ancestors() {
+        let dot_git = directory.join(".git");
+        if dot_git.is_dir() {
+            return Some(directory.to_path_buf());
         }
 
+        if dot_git.is_file() {
+            let content = std::fs::read_to_string(&dot_git).ok()?;
+            let git_dir = parse_git_dir_redirect(directory, &content)?;
+            if let Some(worktrees_dir) = git_dir.parent().filter(|parent| {
+                parent
+                    .file_name()
+                    .map(|name| name == "worktrees")
+                    .unwrap_or(false)
+            }) {
+                return worktrees_dir
+                    .parent()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf);
+            }
+
+            if git_dir
+                .file_name()
+                .map(|name| name == ".git")
+                .unwrap_or(false)
+            {
+                return git_dir.parent().map(Path::to_path_buf);
+            }
+
+            return Some(directory.to_path_buf());
+        }
+    }
+
+    None
+}
+
+fn parse_git_dir_redirect(base_dir: &Path, content: &str) -> Option<PathBuf> {
+    let redirected = content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("gitdir:").map(str::trim))?;
+    let candidate = PathBuf::from(redirected);
+    Some(if candidate.is_absolute() {
+        candidate
+    } else {
+        base_dir.join(candidate)
+    })
+}
+
+fn sanitize_project_memory_slug(path: &Path) -> String {
+    let display = path.to_string_lossy().replace('\\', "/");
+    let basename = path
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "project".to_string());
+    let slug = basename
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(display.as_bytes());
+    let digest = format!("{:x}", hasher.finalize());
+    format!(
+        "{}-{}",
+        if slug.is_empty() {
+            "project"
+        } else {
+            slug.as_str()
+        },
+        &digest[..12]
+    )
+}
+
+fn load_project_memory_index_excerpt(index_path: &Path) -> Result<Option<String>> {
+    if !index_path.is_file() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(index_path)?;
+    let warning = "WARNING: MEMORY.md index was truncated to fit the prompt budget.";
+    let allowed_bytes = MAX_PROJECT_MEMORY_INDEX_BYTES.saturating_sub(warning.len() + 4);
+    let mut collected = Vec::new();
+    let mut used_bytes = 0usize;
+    let mut truncated = false;
+
+    for (index, line) in content.lines().enumerate() {
+        if index >= MAX_PROJECT_MEMORY_INDEX_LINES {
+            truncated = true;
+            break;
+        }
+
+        let line_bytes = line.len() + usize::from(!collected.is_empty());
+        if used_bytes + line_bytes > allowed_bytes {
+            truncated = true;
+            break;
+        }
+
+        collected.push(line.to_string());
+        used_bytes += line_bytes;
+    }
+
+    let mut excerpt = collected.join("\n").trim().to_string();
+    if excerpt.is_empty() {
+        return Ok(None);
+    }
+
+    if truncated {
+        excerpt.push_str("\n\n");
+        excerpt.push_str(warning);
+    }
+
+    Ok(Some(excerpt))
+}
+
+fn load_project_memory_documents(memory_dir: &Path) -> Result<Vec<ProjectMemoryDocument>> {
+    let mut documents = WalkDir::new(memory_dir)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .map(|value| value == "md")
+                .unwrap_or(false)
+        })
+        .filter(|entry| entry.file_name() != "MEMORY.md")
+        .filter(|entry| {
+            !entry
+                .path()
+                .strip_prefix(memory_dir)
+                .ok()
+                .map(|relative| {
+                    relative
+                        .components()
+                        .any(|component| component.as_os_str().eq("logs"))
+                })
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| load_project_memory_document(memory_dir, entry.path()).ok())
+        .collect::<Vec<_>>();
+
+    documents.sort_by(|left, right| {
+        right
+            .mtime_ms
+            .cmp(&left.mtime_ms)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+
+    Ok(documents)
+}
+
+fn load_project_memory_document(memory_dir: &Path, path: &Path) -> Result<ProjectMemoryDocument> {
+    let raw = std::fs::read_to_string(path)?;
+    let parsed = parse_project_memory_file(&raw);
+    let metadata = std::fs::metadata(path)?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_millis() as u64)
+        .unwrap_or_default();
+    let relative_path = path
+        .strip_prefix(memory_dir)
+        .map_err(|error| anyhow!("failed to strip memory dir prefix: {}", error))?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let description = parsed
+        .description
+        .or_else(|| {
+            parsed
+                .body
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(|line| summarize_text(line, 220))
+        })
+        .unwrap_or_else(|| relative_path.clone());
+
+    Ok(ProjectMemoryDocument {
+        relative_path,
+        name: parsed.name,
+        description,
+        memory_type: parsed.memory_type,
+        body: summarize_text(&parsed.body, MAX_RELEVANT_PROJECT_MEMORY_CHARS),
+        mtime_ms: modified,
+    })
+}
+
+fn parse_project_memory_file(raw: &str) -> ParsedProjectMemoryFile {
+    let mut lines = raw.lines();
+    if !matches!(lines.next().map(str::trim), Some("---")) {
+        return ParsedProjectMemoryFile {
+            name: None,
+            description: None,
+            memory_type: None,
+            body: raw.trim().to_string(),
+        };
+    }
+
+    let mut frontmatter_lines = Vec::new();
+    let mut body_lines = Vec::new();
+    let mut reached_body = false;
+    for line in raw.lines().skip(1) {
+        if !reached_body && line.trim() == "---" {
+            reached_body = true;
+            continue;
+        }
+
+        if reached_body {
+            body_lines.push(line);
+        } else {
+            frontmatter_lines.push(line);
+        }
+    }
+
+    let mut name = None;
+    let mut description = None;
+    let mut memory_type = None;
+    for line in frontmatter_lines {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let normalized_value = value.trim().trim_matches('"').trim_matches('\'');
+        match key.trim() {
+            "name" => name = Some(normalized_value.to_string()),
+            "description" => description = Some(normalized_value.to_string()),
+            "type" => memory_type = Some(normalized_value.to_string()),
+            _ => {}
+        }
+    }
+
+    ParsedProjectMemoryFile {
+        name,
+        description,
+        memory_type,
+        body: body_lines.join("\n").trim().to_string(),
+    }
+}
+
+fn collect_recent_tools(history: &[ChatMessage]) -> Vec<String> {
+    let mut recent_tools = Vec::new();
+    let mut seen = HashSet::new();
+
+    for message in history.iter().rev() {
+        let Some(tool_calls) = message.tool_calls.as_ref() else {
+            continue;
+        };
+
+        for tool_call in tool_calls.iter().rev() {
+            let name = tool_call.function.name.trim();
+            if name.is_empty() || !seen.insert(name.to_string()) {
+                continue;
+            }
+            recent_tools.push(name.to_string());
+            if recent_tools.len() >= MAX_RECENT_TOOLS {
+                return recent_tools;
+            }
+        }
+    }
+
+    recent_tools
+}
+
+fn build_project_memory_selection_query(
+    request: &PromptBuildRequest,
+    store: &ProjectMemoryStore,
+    recent_tools: &[String],
+) -> ProjectMemorySelectionQuery {
+    let already_surfaced = request
+        .already_surfaced_memory_paths
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let candidates = store
+        .candidates
+        .iter()
+        .filter(|candidate| !already_surfaced.contains(&candidate.relative_path))
+        .filter(|candidate| !is_recent_tool_reference(candidate, recent_tools))
+        .map(|candidate| ProjectMemoryCandidate {
+            path: candidate.relative_path.clone(),
+            name: candidate.name.clone(),
+            description: candidate.description.clone(),
+            memory_type: candidate.memory_type.clone(),
+            mtime_ms: candidate.mtime_ms,
+        })
+        .collect::<Vec<_>>();
+
+    ProjectMemorySelectionQuery {
+        query: latest_user_query(&request.history).unwrap_or_default(),
+        memory_index_excerpt: store.index_excerpt.clone(),
+        candidates,
+        recent_tools: recent_tools.to_vec(),
+        already_surfaced_memory_paths: request.already_surfaced_memory_paths.clone(),
+    }
+}
+
+fn latest_user_query(history: &[ChatMessage]) -> Option<String> {
+    history
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .and_then(|message| message.content.clone())
+}
+
+fn is_recent_tool_reference(document: &ProjectMemoryDocument, recent_tools: &[String]) -> bool {
+    matches!(document.memory_type.as_deref(), Some("reference"))
+        && recent_tools.iter().any(|tool| {
+            let normalized_tool = tool.to_ascii_lowercase();
+            document
+                .description
+                .to_ascii_lowercase()
+                .contains(&normalized_tool)
+                || document
+                    .relative_path
+                    .to_ascii_lowercase()
+                    .contains(&normalized_tool)
+        })
+}
+
+fn normalize_selected_project_memory_paths(
+    selected_paths: Vec<String>,
+    candidates: &[ProjectMemoryCandidate],
+) -> Vec<String> {
+    let allowed = candidates
+        .iter()
+        .map(|candidate| candidate.path.clone())
+        .collect::<HashSet<_>>();
+    let mut deduped = Vec::new();
+    let mut seen = HashSet::new();
+
+    for path in selected_paths {
+        if !allowed.contains(&path) || !seen.insert(path.clone()) {
+            continue;
+        }
+        deduped.push(path);
+        if deduped.len() >= MAX_RELEVANT_PROJECT_MEMORY_FILES {
+            break;
+        }
+    }
+
+    deduped
+}
+
+fn select_relevant_project_memory_paths_heuristic(
+    query: &ProjectMemorySelectionQuery,
+) -> Vec<String> {
+    let terms = collect_query_terms(&format!(
+        "{}\n{}",
+        query.query,
+        query.memory_index_excerpt.clone().unwrap_or_default()
+    ));
+
+    let mut ranked = query
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let haystack = format!(
+                "{} {} {} {}",
+                candidate.path,
+                candidate.name.clone().unwrap_or_default(),
+                candidate.description,
+                candidate.memory_type.clone().unwrap_or_default()
+            )
+            .to_ascii_lowercase();
+            let score = terms
+                .iter()
+                .filter(|term| haystack.contains(term.as_str()))
+                .count()
+                + usize::from(candidate.memory_type.as_deref() == Some("project")) * 2
+                + usize::from(candidate.memory_type.as_deref() == Some("feedback"));
+            (candidate, score)
+        })
+        .filter(|(_, score)| *score > 0)
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(
+        |(left_candidate, left_score), (right_candidate, right_score)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| right_candidate.mtime_ms.cmp(&left_candidate.mtime_ms))
+                .then_with(|| left_candidate.path.cmp(&right_candidate.path))
+        },
+    );
+
+    ranked
+        .into_iter()
+        .take(MAX_RELEVANT_PROJECT_MEMORY_FILES)
+        .map(|(candidate, _)| candidate.path.clone())
+        .collect()
+}
+
+fn collect_query_terms(value: &str) -> Vec<String> {
+    let mut terms = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|term| term.len() >= 3)
+        .map(|term| term.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms.dedup();
+    terms
+}
+
+fn build_project_memory_sections_from_bundle(bundle: &ProjectMemoryBundle) -> Vec<PromptSection> {
+    let mut sections = Vec::new();
+
+    if let Some(index_excerpt) = bundle
+        .index_excerpt
+        .as_ref()
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(PromptSection {
+            id: "project_memory_index".to_string(),
+            role: PromptSectionRole::User,
+            content: format!("### Project Memory Index\n{}", index_excerpt),
+            cache_scope: PromptCacheScope::Org,
+            is_dynamic: false,
+            source: PromptSectionSource::ProjectMemoryIndex,
+        });
+    }
+
+    for (index, document) in bundle.relevant_documents.iter().enumerate() {
+        sections.push(PromptSection {
+            id: format!("relevant_project_memory_{}", index),
+            role: PromptSectionRole::User,
+            content: format!(
+                "### Relevant Project Memory ({})\n{}\n\nPath: {}",
+                document
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| document.relative_path.clone()),
+                document.body,
+                document.relative_path
+            ),
+            cache_scope: PromptCacheScope::Org,
+            is_dynamic: false,
+            source: PromptSectionSource::RelevantProjectMemory,
+        });
+    }
+
+    sections
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProjectMemoryResolution {
+    sections: Vec<PromptSection>,
+    surfaced_memory_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectMemoryDocument {
+    relative_path: String,
+    name: Option<String>,
+    description: String,
+    memory_type: Option<String>,
+    body: String,
+    mtime_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectMemoryBundle {
+    index_excerpt: Option<String>,
+    relevant_documents: Vec<ProjectMemoryDocument>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedProjectMemoryFile {
+    name: Option<String>,
+    description: Option<String>,
+    memory_type: Option<String>,
+    body: String,
+}
+
+fn build_prompt_assembly(
+    request: PromptBuildRequest,
+    project_memory_resolution: ProjectMemoryResolution,
+) -> Result<PromptAssembly> {
+    let budget = normalize_budget(request.budget);
+    let current_working_dir = request
+        .current_working_dir
+        .clone()
+        .filter(|path| path.starts_with(&request.workspace_root))
+        .unwrap_or_else(|| request.workspace_root.clone());
+    let memory_policy = resolve_memory_policy(&request.history);
+    let prompt_documents = load_prompt_documents(
+        &request.workspace_root,
+        &current_working_dir,
+        request.global_config_root.as_deref(),
+    );
+    let tool_definition_tokens = estimate_tool_definition_tokens(&request.tool_definitions);
+    let (mut trimmed_history, mut trim_report) =
+        compact_history_messages(request.history, budget.recent_message_count);
+    let static_system_sections = build_static_system_sections(
+        &request.base_system_prompt,
+        &request.workspace_root,
+        &current_working_dir,
+        &request.entrypoint,
+        request.version_fingerprint.as_deref(),
+        &prompt_documents,
+    );
+    let dynamic_boundary_index = static_system_sections.len();
+    let project_memory_sections = if memory_policy == MemoryPolicy::Use && request.memory_enabled {
+        if project_memory_resolution.sections.is_empty() {
+            build_project_memory_sections(&prompt_documents)
+        } else {
+            project_memory_resolution.sections.clone()
+        }
+    } else {
+        Vec::new()
+    };
+    let mut dropped_messages = Vec::new();
+    let stabilization_passes = trimmed_history.len().saturating_add(2).max(2);
+
+    for _ in 0..stabilization_passes {
         let system_sections = build_system_sections(
             &static_system_sections,
             &request.workspace_root,
@@ -286,15 +923,56 @@ impl PromptBuilder {
             trimmed_history.len(),
             memory_policy,
         );
+        let history_budget = available_history_tokens(
+            budget,
+            estimate_sections_tokens(&system_sections),
+            tool_definition_tokens,
+            render_prepended_user_context_message(&user_context_sections)
+                .as_ref()
+                .map(estimate_message_tokens)
+                .unwrap_or_default(),
+        );
+        let trim_result =
+            trim_history_to_budget(trimmed_history, history_budget, budget.recent_message_count);
 
-        Ok(PromptAssembly {
-            system_sections,
-            user_context_sections,
-            history_messages: trimmed_history,
-            dynamic_boundary_index,
-            trim_report,
-        })
+        if trim_result.report.dropped_message_count == 0 {
+            return Ok(PromptAssembly {
+                system_sections,
+                user_context_sections,
+                history_messages: trim_result.history,
+                dynamic_boundary_index,
+                trim_report,
+                surfaced_memory_paths: project_memory_resolution.surfaced_memory_paths,
+            });
+        }
+
+        trim_report.merge(trim_result.report);
+        dropped_messages.extend(trim_result.dropped_messages);
+        trimmed_history = trim_result.history;
     }
+
+    let system_sections = build_system_sections(
+        &static_system_sections,
+        &request.workspace_root,
+        &current_working_dir,
+        &trim_report,
+    );
+    let user_context_sections = build_user_context_sections(
+        &project_memory_sections,
+        &dropped_messages,
+        &trim_report,
+        trimmed_history.len(),
+        memory_policy,
+    );
+
+    Ok(PromptAssembly {
+        system_sections,
+        user_context_sections,
+        history_messages: trimmed_history,
+        dynamic_boundary_index,
+        trim_report,
+        surfaced_memory_paths: project_memory_resolution.surfaced_memory_paths,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

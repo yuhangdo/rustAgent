@@ -618,6 +618,7 @@ impl AgentEventHandler for BridgeEventSink {
                     )
                     .await;
             }
+            AgentEvent::MemorySurfaced { .. } => {}
             AgentEvent::AnswerDelta { full_text, .. } => {
                 self.server.update_answer(&self.run_id, full_text).await;
             }

@@ -1,8 +1,11 @@
 use std::path::Path;
+use std::sync::Mutex;
 
+use async_trait::async_trait;
 use claude_code_rs::api::{ChatMessage, ToolDefinition};
 use claude_code_rs::prompting::{
-    PromptBudget, PromptBuildRequest, PromptBuilder, PromptCacheScope, PromptSectionSource,
+    ProjectMemorySelectionQuery, ProjectMemorySelector, PromptBudget, PromptBuildRequest,
+    PromptBuilder, PromptCacheScope, PromptSectionSource,
 };
 use serde_json::json;
 use tempfile::tempdir;
@@ -39,6 +42,40 @@ fn request(
         entrypoint: "rust-agent-test".to_string(),
         version_fingerprint: Some("test-build".to_string()),
         global_config_root: None,
+        memory_enabled: true,
+        auto_memory_directory: None,
+        already_surfaced_memory_paths: Vec::new(),
+    }
+}
+
+#[derive(Debug)]
+struct StaticMemorySelector {
+    selected_paths: Vec<String>,
+    seen_query: Mutex<Option<ProjectMemorySelectionQuery>>,
+}
+
+impl StaticMemorySelector {
+    fn new(selected_paths: Vec<&str>) -> Self {
+        Self {
+            selected_paths: selected_paths.into_iter().map(str::to_string).collect(),
+            seen_query: Mutex::new(None),
+        }
+    }
+
+    fn seen_query(&self) -> ProjectMemorySelectionQuery {
+        self.seen_query
+            .lock()
+            .expect("selector query lock")
+            .clone()
+            .expect("selector query")
+    }
+}
+
+#[async_trait]
+impl ProjectMemorySelector for StaticMemorySelector {
+    async fn select(&self, query: ProjectMemorySelectionQuery) -> anyhow::Result<Vec<String>> {
+        *self.seen_query.lock().expect("selector query lock") = Some(query);
+        Ok(self.selected_paths.clone())
     }
 }
 
@@ -335,4 +372,186 @@ fn prompt_builder_compacts_old_tool_results_before_dropping_recent_turns() {
         .history_messages
         .iter()
         .any(|message| message.content.as_deref() == Some("recent question")));
+}
+
+#[tokio::test]
+async fn prompt_builder_loads_project_memory_index_and_selected_files_from_auto_memory_dir() {
+    let temp_dir = tempdir().expect("temp dir");
+    let workspace_root = temp_dir.path().join("project");
+    let memory_root = temp_dir.path().join("memory");
+
+    std::fs::create_dir_all(&workspace_root).expect("workspace");
+    std::fs::create_dir_all(&memory_root).expect("memory root");
+    std::fs::write(
+        workspace_root.join("MEMORY.md"),
+        "# Legacy Memory\nThis should not win over auto memory.",
+    )
+    .expect("legacy memory");
+    std::fs::write(
+        memory_root.join("MEMORY.md"),
+        "- [Auth rollout](project_auth_rollout.md) - rollout starts Thursday\n- [Testing preference](feedback_testing.md) - avoid mock databases\n",
+    )
+    .expect("memory index");
+    std::fs::write(
+        memory_root.join("project_auth_rollout.md"),
+        "---\nname: Auth rollout\ndescription: rollout starts Thursday and auth rewrite is blocked by compliance\ntype: project\n---\nWhy: Release freeze starts Thursday.\nHow to apply: Treat auth changes as compliance-sensitive.\n",
+    )
+    .expect("project memory");
+    std::fs::write(
+        memory_root.join("feedback_testing.md"),
+        "---\nname: Testing preference\ndescription: prefer integration tests and do not mock databases\ntype: feedback\n---\nWhy: The user has explicitly validated real database coverage.\nHow to apply: favor integration coverage over mocked persistence.\n",
+    )
+    .expect("feedback memory");
+
+    let selector = StaticMemorySelector::new(vec!["project_auth_rollout.md"]);
+    let mut request = request(
+        &workspace_root,
+        &workspace_root,
+        vec![ChatMessage::user(
+            "what should I know before touching auth rollout?",
+        )],
+    );
+    request.auto_memory_directory = Some(memory_root.clone());
+
+    let assembly = PromptBuilder::build_with_selector(request, Some(&selector))
+        .await
+        .expect("prompt assembly");
+    let rendered = assembly.render();
+    let combined = rendered
+        .messages
+        .iter()
+        .filter_map(|message| message.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(combined.contains("Project Memory Index"));
+    assert!(combined.contains("rollout starts Thursday"));
+    assert!(combined.contains("Relevant Project Memory"));
+    assert!(combined.contains("Treat auth changes as compliance-sensitive."));
+    assert!(!combined.contains("This should not win over auto memory."));
+    assert_eq!(
+        assembly.surfaced_memory_paths,
+        vec!["project_auth_rollout.md".to_string()]
+    );
+
+    let seen_query = selector.seen_query();
+    assert_eq!(
+        seen_query.query,
+        "what should I know before touching auth rollout?"
+    );
+    assert!(seen_query
+        .memory_index_excerpt
+        .as_deref()
+        .unwrap_or_default()
+        .contains("Auth rollout"));
+}
+
+#[tokio::test]
+async fn prompt_builder_filters_already_surfaced_and_recent_tool_reference_noise() {
+    let temp_dir = tempdir().expect("temp dir");
+    let workspace_root = temp_dir.path().join("project");
+    let memory_root = temp_dir.path().join("memory");
+
+    std::fs::create_dir_all(&workspace_root).expect("workspace");
+    std::fs::create_dir_all(&memory_root).expect("memory root");
+    std::fs::write(
+        memory_root.join("MEMORY.md"),
+        "- [Search API](reference_search_api.md) - search tool api reference\n- [Search warning](feedback_search_warning.md) - search tool can miss hidden files\n- [Auth rollout](project_auth_rollout.md) - rollout starts Thursday\n",
+    )
+    .expect("memory index");
+    std::fs::write(
+        memory_root.join("reference_search_api.md"),
+        "---\nname: Search API\ndescription: search tool api reference and usage docs\ntype: reference\n---\nUse the search tool with pattern filters.\n",
+    )
+    .expect("search api");
+    std::fs::write(
+        memory_root.join("feedback_search_warning.md"),
+        "---\nname: Search warning\ndescription: search tool can miss hidden files unless the path is explicit\ntype: feedback\n---\nWhy: hidden files were skipped in a prior run.\nHow to apply: prefer explicit paths for hidden file searches.\n",
+    )
+    .expect("search warning");
+    std::fs::write(
+        memory_root.join("project_auth_rollout.md"),
+        "---\nname: Auth rollout\ndescription: rollout starts Thursday\ntype: project\n---\nFreeze starts Thursday.\n",
+    )
+    .expect("auth rollout");
+
+    let selector = StaticMemorySelector::new(vec!["feedback_search_warning.md"]);
+    let mut request = request(
+        &workspace_root,
+        &workspace_root,
+        vec![
+            ChatMessage::assistant_with_tools(vec![claude_code_rs::api::ToolCall {
+                id: "call_search".to_string(),
+                r#type: "function".to_string(),
+                function: claude_code_rs::api::ToolCallFunction {
+                    name: "search".to_string(),
+                    arguments: "{\"path\":\".\",\"pattern\":\"auth\"}".to_string(),
+                },
+            }]),
+            ChatMessage::tool("call_search", "search results"),
+            ChatMessage::user("anything else I should remember about auth?"),
+        ],
+    );
+    request.auto_memory_directory = Some(memory_root.clone());
+    request.already_surfaced_memory_paths = vec!["project_auth_rollout.md".to_string()];
+
+    let assembly = PromptBuilder::build_with_selector(request, Some(&selector))
+        .await
+        .expect("prompt assembly");
+    let seen_query = selector.seen_query();
+
+    assert_eq!(seen_query.recent_tools, vec!["search".to_string()]);
+    assert!(seen_query
+        .already_surfaced_memory_paths
+        .contains(&"project_auth_rollout.md".to_string()));
+    assert!(!seen_query
+        .candidates
+        .iter()
+        .any(|candidate| candidate.path == "project_auth_rollout.md"));
+    assert!(!seen_query.candidates.iter().any(|candidate| {
+        candidate.path == "reference_search_api.md"
+            && candidate.memory_type.as_deref() == Some("reference")
+    }));
+    assert!(seen_query.candidates.iter().any(|candidate| {
+        candidate.path == "feedback_search_warning.md"
+            && candidate.memory_type.as_deref() == Some("feedback")
+    }));
+    assert_eq!(
+        assembly.surfaced_memory_paths,
+        vec!["feedback_search_warning.md".to_string()]
+    );
+}
+
+#[test]
+fn prompt_builder_truncates_project_memory_index_by_lines_and_bytes() {
+    let temp_dir = tempdir().expect("temp dir");
+    let workspace_root = temp_dir.path().join("project");
+    let memory_root = temp_dir.path().join("memory");
+
+    std::fs::create_dir_all(&workspace_root).expect("workspace");
+    std::fs::create_dir_all(&memory_root).expect("memory root");
+
+    let long_lines = (0..260)
+        .map(|index| format!("- [Entry {index}](entry_{index}.md) - {}", "x".repeat(180)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(memory_root.join("MEMORY.md"), long_lines).expect("memory index");
+
+    let mut request = request(
+        &workspace_root,
+        &workspace_root,
+        vec![ChatMessage::user("latest question")],
+    );
+    request.auto_memory_directory = Some(memory_root.clone());
+
+    let assembly = PromptBuilder::build(request).expect("prompt assembly");
+    let index_section = assembly
+        .user_context_sections
+        .iter()
+        .find(|section| matches!(section.source, PromptSectionSource::ProjectMemoryIndex))
+        .expect("memory index section");
+
+    assert!(index_section.content.contains("WARNING: MEMORY.md"));
+    assert!(index_section.content.lines().count() <= 210);
+    assert!(index_section.content.len() <= 25_400);
 }

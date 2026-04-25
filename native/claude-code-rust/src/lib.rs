@@ -57,8 +57,9 @@ pub use mcp::McpManager;
 pub use memory::MemoryManager;
 pub use plugins::PluginManager;
 pub use prompting::{
-    PromptAssembly, PromptBudget, PromptBuildRequest, PromptBuilder, PromptCacheScope,
-    PromptSection, PromptSectionRole, PromptSectionSource, PromptTrimReport, RenderedPrompt,
+    ProjectMemoryCandidate, ProjectMemorySelectionQuery, ProjectMemorySelector, PromptAssembly,
+    PromptBudget, PromptBuildRequest, PromptBuilder, PromptCacheScope, PromptSection,
+    PromptSectionRole, PromptSectionSource, PromptTrimReport, RenderedPrompt,
     SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
 };
 pub use query_engine::{

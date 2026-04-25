@@ -45,6 +45,9 @@ pub enum TranscriptEvent {
         tool_name: String,
         error_summary: String,
     },
+    MemorySurfaced {
+        paths: Vec<String>,
+    },
     UsageRecorded {
         model: String,
         prompt_tokens: usize,
@@ -242,6 +245,26 @@ impl TranscriptStore {
         Ok(events)
     }
 
+    pub async fn surfaced_memory_paths(&self) -> Result<Vec<String>> {
+        let mut paths = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for envelope in self.read_all().await? {
+            if let TranscriptEvent::MemorySurfaced {
+                paths: surfaced_paths,
+            } = envelope.event
+            {
+                for path in surfaced_paths {
+                    if seen.insert(path.clone()) {
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+
+        Ok(paths)
+    }
+
     pub async fn replay(&self) -> Result<TranscriptReplay> {
         let events = self.read_all().await?;
         let mut replay = TranscriptReplay::default();
@@ -331,6 +354,7 @@ impl TranscriptStore {
                     replay.last_error = Some(error_summary.clone());
                     pending_run = true;
                 }
+                TranscriptEvent::MemorySurfaced { .. } => {}
                 TranscriptEvent::UsageRecorded {
                     model,
                     prompt_tokens,
@@ -426,5 +450,38 @@ mod tests {
         assert_eq!(replay.messages.len(), 2);
         assert_eq!(replay.messages[0].role, "user");
         assert_eq!(replay.messages[1].role, "assistant");
+    }
+
+    #[tokio::test]
+    async fn transcript_store_collects_unique_surfaced_memory_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TranscriptStore::new(temp.path().to_path_buf());
+
+        store
+            .append(&TranscriptEvent::MemorySurfaced {
+                paths: vec!["notes/auth.md".to_string(), "plans/release.md".to_string()],
+            })
+            .await
+            .unwrap();
+        store
+            .append(&TranscriptEvent::MemorySurfaced {
+                paths: vec![
+                    "notes/auth.md".to_string(),
+                    "runbooks/deploy.md".to_string(),
+                ],
+            })
+            .await
+            .unwrap();
+
+        let paths = store.surfaced_memory_paths().await.unwrap();
+
+        assert_eq!(
+            paths,
+            vec![
+                "notes/auth.md".to_string(),
+                "plans/release.md".to_string(),
+                "runbooks/deploy.md".to_string(),
+            ]
+        );
     }
 }

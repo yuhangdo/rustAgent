@@ -11,7 +11,10 @@ use tokio::time::timeout;
 
 use crate::api::{ApiClient, ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
 use crate::config::Settings;
-use crate::prompting::{PromptBudget, PromptBuildRequest, PromptBuilder};
+use crate::prompting::{
+    ProjectMemorySelectionQuery, ProjectMemorySelector, PromptBudget, PromptBuildRequest,
+    PromptBuilder,
+};
 use crate::streaming::{StreamSnapshot, StreamUpdate, StreamingAssembler};
 use crate::tools::{ToolError, ToolOutput, ToolRegistry};
 
@@ -19,12 +22,16 @@ const DEFAULT_MAX_ITERATIONS: usize = 8;
 const MAX_ALLOWED_ITERATIONS: usize = 24;
 const MAX_TOOL_PAYLOAD_CHARS: usize = 12_000;
 const STREAM_POLL_INTERVAL_MILLIS: u64 = 250;
+const PROJECT_MEMORY_SELECTOR_MODEL: &str = "sonnet";
+const PROJECT_MEMORY_SELECTOR_MAX_TOKENS: usize = 512;
+const PROJECT_MEMORY_SELECTOR_MAX_PATHS: usize = 5;
 
 #[derive(Debug, Clone)]
 pub struct AgentExecutionRequest {
     pub system_prompt: String,
     pub history: Vec<ChatMessage>,
     pub workspace_root: PathBuf,
+    pub already_surfaced_memory_paths: Vec<String>,
     pub max_iterations: usize,
 }
 
@@ -73,6 +80,9 @@ pub enum AgentEvent {
         tool_name: String,
         error_summary: String,
     },
+    MemorySurfaced {
+        paths: Vec<String>,
+    },
     FinalAnswer {
         answer: String,
     },
@@ -120,6 +130,8 @@ pub struct AgentRuntime {
     tool_registry: ToolRegistry,
     max_response_tokens: usize,
     working_dir: PathBuf,
+    memory_enabled: bool,
+    auto_memory_directory: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,11 +154,15 @@ impl AgentRuntime {
     pub fn new(settings: Settings) -> Self {
         let max_response_tokens = settings.api.max_tokens;
         let working_dir = settings.working_dir.clone();
+        let memory_enabled = settings.memory.enabled;
+        let auto_memory_directory = settings.memory.auto_memory_directory.clone();
         Self {
             client: ApiClient::new(settings),
             tool_registry: ToolRegistry::new(),
             max_response_tokens,
             working_dir,
+            memory_enabled,
+            auto_memory_directory,
         }
     }
 
@@ -171,6 +187,7 @@ impl AgentRuntime {
             system_prompt,
             history,
             workspace_root,
+            already_surfaced_memory_paths,
             max_iterations: requested_max_iterations,
         } = request;
         let mut latest_reasoning = String::new();
@@ -181,7 +198,7 @@ impl AgentRuntime {
             requested_max_iterations.min(MAX_ALLOWED_ITERATIONS)
         };
         let tool_definitions = self.tool_definitions();
-        let mut messages = PromptBuilder::build(PromptBuildRequest {
+        let prompt_request = PromptBuildRequest {
             base_system_prompt: system_prompt,
             history,
             workspace_root: workspace_root.clone(),
@@ -191,9 +208,23 @@ impl AgentRuntime {
             entrypoint: "rust-agent-runtime".to_string(),
             version_fingerprint: None,
             global_config_root: None,
-        })?
-        .render()
-        .messages;
+            memory_enabled: self.memory_enabled,
+            auto_memory_directory: self.auto_memory_directory.clone(),
+            already_surfaced_memory_paths,
+        };
+        let memory_selector = ApiProjectMemorySelector {
+            client: &self.client,
+        };
+        let prompt_assembly =
+            PromptBuilder::build_with_selector(prompt_request, Some(&memory_selector)).await?;
+        if !prompt_assembly.surfaced_memory_paths.is_empty() {
+            event_handler
+                .on_event(AgentEvent::MemorySurfaced {
+                    paths: prompt_assembly.surfaced_memory_paths.clone(),
+                })
+                .await;
+        }
+        let mut messages = prompt_assembly.render().messages;
 
         for iteration in 0..max_iterations {
             if cancellation.is_cancelled() {
@@ -440,6 +471,37 @@ impl AgentRuntime {
     }
 }
 
+struct ApiProjectMemorySelector<'a> {
+    client: &'a ApiClient,
+}
+
+#[async_trait]
+impl ProjectMemorySelector for ApiProjectMemorySelector<'_> {
+    async fn select(&self, query: ProjectMemorySelectionQuery) -> Result<Vec<String>> {
+        if query.candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let response = self
+            .client
+            .chat_with_overrides(
+                build_project_memory_selector_messages(&query),
+                None,
+                Some(PROJECT_MEMORY_SELECTOR_MODEL),
+                Some(PROJECT_MEMORY_SELECTOR_MAX_TOKENS),
+                Some(0.0),
+            )
+            .await?;
+        let content = response
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.as_deref())
+            .ok_or_else(|| anyhow!("Project memory selector returned no message content"))?;
+
+        parse_project_memory_selector_paths(content)
+    }
+}
+
 fn stream_snapshot_into_turn_result(snapshot: StreamSnapshot) -> Result<TurnResult> {
     let tool_calls = snapshot
         .tool_calls
@@ -574,6 +636,93 @@ fn summarize_text(value: &str, max_chars: usize) -> String {
     }
 }
 
+fn build_project_memory_selector_messages(query: &ProjectMemorySelectionQuery) -> Vec<ChatMessage> {
+    let payload = json!({
+        "task": "Select the most relevant project memory files for the active user request.",
+        "constraints": {
+            "max_paths": PROJECT_MEMORY_SELECTOR_MAX_PATHS,
+            "exclude_already_surfaced": true,
+            "prefer_enduring_context": true,
+            "ignore_recent_tool_reference_noise": true,
+        },
+        "user_query": query.query,
+        "memory_index_excerpt": query.memory_index_excerpt,
+        "recent_tools": query.recent_tools,
+        "already_surfaced_memory_paths": query.already_surfaced_memory_paths,
+        "candidates": query.candidates,
+    });
+
+    vec![
+        ChatMessage::system(
+            "You select relevant project memory files for another coding agent. Return JSON only with the shape {\"paths\":[\"path1.md\",\"path2.md\"]}. Choose at most 5 paths, omit already surfaced memories, and return an empty array when nothing is relevant.",
+        ),
+        ChatMessage::user(
+            serde_json::to_string_pretty(&payload)
+                .unwrap_or_else(|_| payload.to_string()),
+        ),
+    ]
+}
+
+fn parse_project_memory_selector_paths(raw: &str) -> Result<Vec<String>> {
+    for candidate in project_memory_selector_json_candidates(raw) {
+        if let Some(paths) = parse_project_memory_selector_paths_value(candidate) {
+            return Ok(paths);
+        }
+    }
+
+    Err(anyhow!(
+        "Project memory selector returned invalid JSON payload: {}",
+        summarize_text(raw, 200)
+    ))
+}
+
+fn project_memory_selector_json_candidates(raw: &str) -> Vec<&str> {
+    let trimmed = raw.trim();
+    let mut candidates = vec![trimmed];
+    if let Some(fenced_body) = trimmed
+        .strip_prefix("```json")
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+    {
+        candidates.push(fenced_body);
+    } else if let Some(fenced_body) = trimmed
+        .strip_prefix("```")
+        .and_then(|value| value.strip_suffix("```"))
+        .map(str::trim)
+    {
+        candidates.push(fenced_body);
+    }
+    candidates
+}
+
+fn parse_project_memory_selector_paths_value(raw: &str) -> Option<Vec<String>> {
+    let value: Value = serde_json::from_str(raw).ok()?;
+    let raw_paths = match value {
+        Value::Array(paths) => paths,
+        Value::Object(object) => object
+            .get("paths")
+            .or_else(|| object.get("selected_paths"))?
+            .as_array()?
+            .clone(),
+        _ => return None,
+    };
+
+    let mut deduped = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for value in raw_paths {
+        let path = value.as_str()?.trim();
+        if path.is_empty() || !seen.insert(path.to_string()) {
+            continue;
+        }
+        deduped.push(path.to_string());
+        if deduped.len() >= PROJECT_MEMORY_SELECTOR_MAX_PATHS {
+            break;
+        }
+    }
+
+    Some(deduped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,5 +769,25 @@ mod tests {
             result.tool_calls[0].function.arguments,
             "{\"path\":\".\",\"pattern\":\"streaming\"}"
         );
+    }
+
+    #[test]
+    fn project_memory_selector_accepts_object_payloads() {
+        let paths = parse_project_memory_selector_paths(
+            r#"{"paths":["notes/auth.md","notes/auth.md","plans/release.md"]}"#,
+        )
+        .expect("selector paths");
+
+        assert_eq!(paths, vec!["notes/auth.md", "plans/release.md"]);
+    }
+
+    #[test]
+    fn project_memory_selector_accepts_fenced_json_arrays() {
+        let paths = parse_project_memory_selector_paths(
+            "```json\n[\"notes/auth.md\",\"runbooks/deploy.md\"]\n```",
+        )
+        .expect("selector paths");
+
+        assert_eq!(paths, vec!["notes/auth.md", "runbooks/deploy.md"]);
     }
 }

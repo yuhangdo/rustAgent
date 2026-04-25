@@ -49,36 +49,31 @@ impl ApiClient {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<ChatResponse> {
-        let api_key = self
-            .get_api_key()
-            .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
+        self.chat_with_overrides(messages, tools, None, None, None)
+            .await
+    }
 
+    pub async fn chat_with_overrides(
+        &self,
+        messages: Vec<ChatMessage>,
+        tools: Option<Vec<ToolDefinition>>,
+        model_override: Option<&str>,
+        max_tokens_override: Option<usize>,
+        temperature_override: Option<f32>,
+    ) -> anyhow::Result<ChatResponse> {
         let request = ChatRequest {
-            model: self.settings.api.get_model_id(&self.settings.model),
+            model: self
+                .settings
+                .api
+                .get_model_id(model_override.unwrap_or(self.settings.model.as_str())),
             messages,
-            max_tokens: self.settings.api.max_tokens,
+            max_tokens: max_tokens_override.unwrap_or(self.settings.api.max_tokens),
             stream: false,
-            temperature: 0.7,
+            temperature: temperature_override.unwrap_or(0.7),
             tools,
         };
 
-        let url = build_chat_completions_url(&self.get_base_url());
-
-        let response = self
-            .http_client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("API error ({}): {}", status, body));
-        }
-
+        let response = self.send_chat_request(&request, false).await?;
         let chat_response: ChatResponse = response.json().await?;
         Ok(chat_response)
     }
@@ -88,10 +83,6 @@ impl ApiClient {
         messages: Vec<ChatMessage>,
         tools: Option<Vec<ToolDefinition>>,
     ) -> anyhow::Result<reqwest::Response> {
-        let api_key = self
-            .get_api_key()
-            .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
-
         let request = ChatRequest {
             model: self.settings.api.get_model_id(&self.settings.model),
             messages,
@@ -101,18 +92,28 @@ impl ApiClient {
             tools,
         };
 
-        let url = build_chat_completions_url(&self.get_base_url());
+        self.send_chat_request(&request, true).await
+    }
 
-        let response = self
+    async fn send_chat_request(
+        &self,
+        request: &ChatRequest,
+        stream: bool,
+    ) -> anyhow::Result<reqwest::Response> {
+        let api_key = self
+            .get_api_key()
+            .ok_or_else(|| anyhow::anyhow!("API key not configured"))?;
+        let url = build_chat_completions_url(&self.get_base_url());
+        let mut request_builder = self
             .http_client
             .post(&url)
             .header("Authorization", format!("Bearer {}", api_key))
-            .header("Content-Type", "application/json")
-            .header("Accept", "text/event-stream")
-            .json(&request)
-            .send()
-            .await?;
+            .header("Content-Type", "application/json");
+        if stream {
+            request_builder = request_builder.header("Accept", "text/event-stream");
+        }
 
+        let response = request_builder.json(request).send().await?;
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();

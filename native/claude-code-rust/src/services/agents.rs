@@ -232,7 +232,11 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
         agents.get(agent_type).cloned()
     }
 
-    pub async fn run_agent(&self, agent_type: &AgentType, prompt: &str) -> anyhow::Result<AgentSession> {
+    pub async fn run_agent(
+        &self,
+        agent_type: &AgentType,
+        prompt: &str,
+    ) -> anyhow::Result<AgentSession> {
         let agents = self.agents.read().await;
         let agent = agents
             .get(agent_type)
@@ -272,7 +276,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
                 content: result,
                 timestamp: Utc::now(),
             });
-            
+
             return Ok(session.clone());
         }
 
@@ -288,6 +292,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
                     system_prompt: agent.system_prompt.clone(),
                     history: vec![crate::api::ChatMessage::user(prompt.to_string())],
                     workspace_root: state.settings.working_dir.clone(),
+                    already_surfaced_memory_paths: Vec::new(),
                     max_iterations: 8,
                 },
                 &crate::agent_runtime::NoopAgentEventHandler,
@@ -315,7 +320,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
 
     pub async fn cancel_session(&self, session_id: &str) -> anyhow::Result<()> {
         let mut sessions = self.sessions.write().await;
-        
+
         if let Some(session) = sessions.get_mut(session_id) {
             session.status = AgentStatus::Failed;
             session.updated_at = Utc::now();
@@ -328,7 +333,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
     pub async fn get_status(&self) -> AgentStatusReport {
         let agents = self.agents.read().await;
         let sessions = self.sessions.read().await;
-        
+
         let active_sessions = sessions
             .values()
             .filter(|s| s.status == AgentStatus::Running)
@@ -354,7 +359,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
         }
 
         let mut agents = self.agents.write().await;
-        
+
         let entries = std::fs::read_dir(dir)?;
         for entry in entries.flatten() {
             let path = entry.path();
