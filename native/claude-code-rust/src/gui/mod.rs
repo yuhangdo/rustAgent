@@ -5,10 +5,10 @@
 
 pub mod app;
 pub mod chat;
-pub mod sidebar;
 pub mod settings;
-pub mod theme;
+pub mod sidebar;
 pub mod syntax_highlight;
+pub mod theme;
 pub mod tool_calls;
 
 pub use app::ClaudeCodeApp;
@@ -18,7 +18,9 @@ pub use theme::Theme;
 #[derive(Debug, Clone)]
 pub enum GuiMessage {
     /// Send a chat message to the API
-    SendMessage { messages: Vec<crate::api::ChatMessage> },
+    SendMessage {
+        messages: Vec<crate::api::ChatMessage>,
+    },
     /// Received a chunk of streaming response
     StreamChunk { content: String, done: bool },
     /// API error occurred

@@ -131,12 +131,19 @@ impl SettingsPanel {
 
         for (section, icon, label) in sections {
             let is_selected = self.current_section == section;
-            
-            let button = egui::Button::new(
-                RichText::new(format!("{} {}", icon, label))
-                    .color(if is_selected { Color32::WHITE } else { theme.text_color() })
-            )
-            .fill(if is_selected { theme.primary_color() } else { theme.surface_color() })
+
+            let button = egui::Button::new(RichText::new(format!("{} {}", icon, label)).color(
+                if is_selected {
+                    Color32::WHITE
+                } else {
+                    theme.text_color()
+                },
+            ))
+            .fill(if is_selected {
+                theme.primary_color()
+            } else {
+                theme.surface_color()
+            })
             .min_size(Vec2::new(ui.available_width(), 40.0))
             .rounding(8.0);
 
@@ -155,7 +162,7 @@ impl SettingsPanel {
         ui.group(|ui| {
             ui.label(RichText::new("Language").strong().color(theme.text_color()));
             ui.add_space(4.0);
-            
+
             egui::ComboBox::from_id_source("language")
                 .selected_text(&self.language)
                 .show_ui(ui, |ui| {
@@ -174,12 +181,16 @@ impl SettingsPanel {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.auto_save, "");
             ui.vertical(|ui| {
-                ui.label(RichText::new("Auto-save conversations")
-                    .strong()
-                    .color(theme.text_color()));
-                ui.label(RichText::new("Automatically save conversation history")
-                    .color(theme.muted_text_color())
-                    .size(11.0));
+                ui.label(
+                    RichText::new("Auto-save conversations")
+                        .strong()
+                        .color(theme.text_color()),
+                );
+                ui.label(
+                    RichText::new("Automatically save conversation history")
+                        .color(theme.muted_text_color())
+                        .size(11.0),
+                );
             });
         });
 
@@ -189,12 +200,16 @@ impl SettingsPanel {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.notifications, "");
             ui.vertical(|ui| {
-                ui.label(RichText::new("Enable notifications")
-                    .strong()
-                    .color(theme.text_color()));
-                ui.label(RichText::new("Show notifications for important events")
-                    .color(theme.muted_text_color())
-                    .size(11.0));
+                ui.label(
+                    RichText::new("Enable notifications")
+                        .strong()
+                        .color(theme.text_color()),
+                );
+                ui.label(
+                    RichText::new("Show notifications for important events")
+                        .color(theme.muted_text_color())
+                        .size(11.0),
+                );
             });
         });
 
@@ -204,12 +219,16 @@ impl SettingsPanel {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.telemetry, "");
             ui.vertical(|ui| {
-                ui.label(RichText::new("Enable telemetry")
-                    .strong()
-                    .color(theme.text_color()));
-                ui.label(RichText::new("Help improve Claude Code by sharing anonymous usage data")
-                    .color(theme.muted_text_color())
-                    .size(11.0));
+                ui.label(
+                    RichText::new("Enable telemetry")
+                        .strong()
+                        .color(theme.text_color()),
+                );
+                ui.label(
+                    RichText::new("Help improve Claude Code by sharing anonymous usage data")
+                        .color(theme.muted_text_color())
+                        .size(11.0),
+                );
             });
         });
     }
@@ -222,23 +241,25 @@ impl SettingsPanel {
         ui.group(|ui| {
             ui.label(RichText::new("API Key").strong().color(theme.text_color()));
             ui.add_space(4.0);
-            
+
             ui.horizontal(|ui| {
                 let api_key_edit = egui::TextEdit::singleline(&mut self.api_key)
                     .password(true)
                     .hint_text("Enter your API key")
                     .desired_width(ui.available_width() - 100.0);
-                
+
                 ui.add(api_key_edit);
-                
+
                 if ui.button("Show").clicked() {
                     // Toggle visibility
                 }
             });
-            
-            ui.label(RichText::new("Your API key is stored securely on your device")
-                .color(theme.muted_text_color())
-                .size(11.0));
+
+            ui.label(
+                RichText::new("Your API key is stored securely on your device")
+                    .color(theme.muted_text_color())
+                    .size(11.0),
+            );
         });
 
         ui.add_space(16.0);
@@ -247,11 +268,11 @@ impl SettingsPanel {
         ui.group(|ui| {
             ui.label(RichText::new("Base URL").strong().color(theme.text_color()));
             ui.add_space(4.0);
-            
+
             ui.add(
                 egui::TextEdit::singleline(&mut self.base_url)
                     .hint_text("https://api.example.com")
-                    .desired_width(ui.available_width())
+                    .desired_width(ui.available_width()),
             );
         });
 
@@ -261,15 +282,31 @@ impl SettingsPanel {
         ui.group(|ui| {
             ui.label(RichText::new("Model").strong().color(theme.text_color()));
             ui.add_space(4.0);
-            
+
             egui::ComboBox::from_id_source("model")
                 .selected_text(&self.model)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.model, "deepseek-reasoner".to_string(), "DeepSeek Reasoner");
-                    ui.selectable_value(&mut self.model, "deepseek-chat".to_string(), "DeepSeek Chat");
-                    ui.selectable_value(&mut self.model, "claude-sonnet".to_string(), "Claude Sonnet");
+                    ui.selectable_value(
+                        &mut self.model,
+                        "deepseek-reasoner".to_string(),
+                        "DeepSeek Reasoner",
+                    );
+                    ui.selectable_value(
+                        &mut self.model,
+                        "deepseek-chat".to_string(),
+                        "DeepSeek Chat",
+                    );
+                    ui.selectable_value(
+                        &mut self.model,
+                        "claude-sonnet".to_string(),
+                        "Claude Sonnet",
+                    );
                     ui.selectable_value(&mut self.model, "claude-opus".to_string(), "Claude Opus");
-                    ui.selectable_value(&mut self.model, "claude-haiku".to_string(), "Claude Haiku");
+                    ui.selectable_value(
+                        &mut self.model,
+                        "claude-haiku".to_string(),
+                        "Claude Haiku",
+                    );
                 });
         });
 
@@ -342,10 +379,17 @@ impl SettingsPanel {
                 for (t, icon, label) in themes {
                     let is_selected = self.theme == t;
                     let button = egui::Button::new(
-                        RichText::new(format!("{} {}", icon, label))
-                            .color(if is_selected { Color32::WHITE } else { theme.text_color() })
+                        RichText::new(format!("{} {}", icon, label)).color(if is_selected {
+                            Color32::WHITE
+                        } else {
+                            theme.text_color()
+                        }),
                     )
-                    .fill(if is_selected { theme.primary_color() } else { theme.surface_color() })
+                    .fill(if is_selected {
+                        theme.primary_color()
+                    } else {
+                        theme.surface_color()
+                    })
                     .min_size(Vec2::new(100.0, 60.0))
                     .rounding(8.0);
 
@@ -361,9 +405,13 @@ impl SettingsPanel {
 
         // Font size
         ui.group(|ui| {
-            ui.label(RichText::new("Font Size").strong().color(theme.text_color()));
+            ui.label(
+                RichText::new("Font Size")
+                    .strong()
+                    .color(theme.text_color()),
+            );
             ui.add_space(4.0);
-            
+
             ui.horizontal(|ui| {
                 if ui.button("A-").clicked() {
                     // Decrease font size
@@ -382,12 +430,16 @@ impl SettingsPanel {
             let mut compact_mode = false;
             ui.checkbox(&mut compact_mode, "");
             ui.vertical(|ui| {
-                ui.label(RichText::new("Compact mode")
-                    .strong()
-                    .color(theme.text_color()));
-                ui.label(RichText::new("Reduce padding and margins for a more compact view")
-                    .color(theme.muted_text_color())
-                    .size(11.0));
+                ui.label(
+                    RichText::new("Compact mode")
+                        .strong()
+                        .color(theme.text_color()),
+                );
+                ui.label(
+                    RichText::new("Reduce padding and margins for a more compact view")
+                        .color(theme.muted_text_color())
+                        .size(11.0),
+                );
             });
         });
     }
@@ -399,30 +451,42 @@ impl SettingsPanel {
         // Installed plugins list
         let plugins = vec![
             ("File System", "1.0.0", "Access and manage files", true),
-            ("Git Integration", "1.2.0", "Git commands and repository management", true),
-            ("Code Analysis", "0.9.0", "Static code analysis tools", false),
+            (
+                "Git Integration",
+                "1.2.0",
+                "Git commands and repository management",
+                true,
+            ),
+            (
+                "Code Analysis",
+                "0.9.0",
+                "Static code analysis tools",
+                false,
+            ),
             ("Terminal", "1.1.0", "Integrated terminal access", true),
         ];
 
         for (name, version, description, enabled) in plugins {
             let mut is_enabled = enabled;
-            
+
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut is_enabled, "");
-                    
+
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(name)
-                                .strong()
-                                .color(theme.text_color()));
-                            ui.label(RichText::new(format!("v{}", version))
-                                .color(theme.muted_text_color())
-                                .size(11.0));
+                            ui.label(RichText::new(name).strong().color(theme.text_color()));
+                            ui.label(
+                                RichText::new(format!("v{}", version))
+                                    .color(theme.muted_text_color())
+                                    .size(11.0),
+                            );
                         });
-                        ui.label(RichText::new(description)
-                            .color(theme.muted_text_color())
-                            .size(11.0));
+                        ui.label(
+                            RichText::new(description)
+                                .color(theme.muted_text_color())
+                                .size(11.0),
+                        );
                     });
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -444,7 +508,7 @@ impl SettingsPanel {
         let install_button = egui::Button::new(
             RichText::new("➕ Install Plugin")
                 .strong()
-                .color(Color32::WHITE)
+                .color(Color32::WHITE),
         )
         .fill(theme.primary_color())
         .min_size(Vec2::new(150.0, 36.0))
@@ -467,7 +531,7 @@ impl SettingsPanel {
             ui.horizontal(|ui| {
                 ui.label("Cache size: ");
                 ui.label(RichText::new("125 MB").strong().color(theme.text_color()));
-                
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Clear Cache").clicked() {
                         // Clear cache
@@ -480,7 +544,11 @@ impl SettingsPanel {
 
         // Data export/import
         ui.group(|ui| {
-            ui.label(RichText::new("Data Management").strong().color(theme.text_color()));
+            ui.label(
+                RichText::new("Data Management")
+                    .strong()
+                    .color(theme.text_color()),
+            );
             ui.add_space(8.0);
 
             ui.horizontal(|ui| {
@@ -513,16 +581,19 @@ impl SettingsPanel {
         ui.add_space(16.0);
 
         // Developer options
-        ui.collapsing(RichText::new("Developer Options").color(theme.text_color()), |ui| {
-            let mut dev_mode = false;
-            ui.checkbox(&mut dev_mode, "Enable developer mode");
-            
-            let mut debug_logging = false;
-            ui.checkbox(&mut debug_logging, "Enable debug logging");
-            
-            let mut experimental_features = false;
-            ui.checkbox(&mut experimental_features, "Enable experimental features");
-        });
+        ui.collapsing(
+            RichText::new("Developer Options").color(theme.text_color()),
+            |ui| {
+                let mut dev_mode = false;
+                ui.checkbox(&mut dev_mode, "Enable developer mode");
+
+                let mut debug_logging = false;
+                ui.checkbox(&mut debug_logging, "Enable debug logging");
+
+                let mut experimental_features = false;
+                ui.checkbox(&mut experimental_features, "Enable experimental features");
+            },
+        );
     }
 
     /// Get the current theme

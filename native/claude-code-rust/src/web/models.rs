@@ -1,7 +1,7 @@
 //! Web Models - Data structures for the web interface
 
-use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Plugin information for the marketplace
 #[derive(Debug, Clone, Serialize, Deserialize)]

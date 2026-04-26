@@ -8,10 +8,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use super::{
-    models::*,
-    templates::TemplateEngine,
-};
+use super::{models::*, templates::TemplateEngine};
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -75,7 +72,7 @@ pub async fn search_plugins(
     Query(query): Query<PluginSearchQuery>,
 ) -> Json<ApiResponse<PluginSearchResults>> {
     let all_plugins = get_sample_plugins();
-    
+
     // Filter by search query
     let filtered: Vec<Plugin> = if let Some(ref q) = query.q {
         all_plugins
@@ -83,7 +80,9 @@ pub async fn search_plugins(
             .filter(|p| {
                 p.name.to_lowercase().contains(&q.to_lowercase())
                     || p.description.to_lowercase().contains(&q.to_lowercase())
-                    || p.tags.iter().any(|t| t.to_lowercase().contains(&q.to_lowercase()))
+                    || p.tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&q.to_lowercase()))
             })
             .collect()
     } else {
@@ -107,11 +106,7 @@ pub async fn search_plugins(
 
     // Paginate
     let start = (page - 1) * per_page;
-    let plugins: Vec<Plugin> = filtered
-        .into_iter()
-        .skip(start)
-        .take(per_page)
-        .collect();
+    let plugins: Vec<Plugin> = filtered.into_iter().skip(start).take(per_page).collect();
 
     let results = PluginSearchResults {
         plugins,
@@ -125,11 +120,9 @@ pub async fn search_plugins(
 }
 
 /// Get a single plugin by ID
-pub async fn get_plugin(
-    Path(id): Path<String>,
-) -> Result<Json<ApiResponse<Plugin>>, StatusCode> {
+pub async fn get_plugin(Path(id): Path<String>) -> Result<Json<ApiResponse<Plugin>>, StatusCode> {
     let plugins = get_sample_plugins();
-    
+
     match plugins.into_iter().find(|p| p.id == id) {
         Some(plugin) => Ok(Json(ApiResponse::success(plugin))),
         None => Err(StatusCode::NOT_FOUND),
@@ -137,9 +130,7 @@ pub async fn get_plugin(
 }
 
 /// Get plugin reviews
-pub async fn get_plugin_reviews(
-    Path(id): Path<String>,
-) -> Json<ApiResponse<Vec<PluginReview>>> {
+pub async fn get_plugin_reviews(Path(id): Path<String>) -> Json<ApiResponse<Vec<PluginReview>>> {
     let reviews = vec![
         PluginReview {
             id: "1".to_string(),
@@ -148,7 +139,8 @@ pub async fn get_plugin_reviews(
             user_avatar: None,
             rating: 5,
             title: "Excellent plugin!".to_string(),
-            content: "This plugin has significantly improved my workflow. Highly recommended!".to_string(),
+            content: "This plugin has significantly improved my workflow. Highly recommended!"
+                .to_string(),
             created_at: chrono::Utc::now(),
             helpful_count: 42,
         },
@@ -277,14 +269,20 @@ fn get_sample_plugins() -> Vec<Plugin> {
         Plugin {
             id: "file-system".to_string(),
             name: "File System".to_string(),
-            description: "Advanced file operations including search, batch rename, and directory sync".to_string(),
+            description:
+                "Advanced file operations including search, batch rename, and directory sync"
+                    .to_string(),
             version: "1.2.0".to_string(),
             author: "Claude Code Team".to_string(),
             author_url: Some("https://github.com/claude-code".to_string()),
             repository_url: Some("https://github.com/claude-code/file-system-plugin".to_string()),
             documentation_url: Some("https://docs.claude-code.dev/plugins/file-system".to_string()),
             icon_url: None,
-            tags: vec!["files".to_string(), "filesystem".to_string(), "utilities".to_string()],
+            tags: vec![
+                "files".to_string(),
+                "filesystem".to_string(),
+                "utilities".to_string(),
+            ],
             category: PluginCategory::Tools,
             downloads: 125_432,
             rating: 4.8,
@@ -301,14 +299,19 @@ fn get_sample_plugins() -> Vec<Plugin> {
         Plugin {
             id: "git-integration".to_string(),
             name: "Git Integration".to_string(),
-            description: "Full Git support with commit, branch, merge, and history visualization".to_string(),
+            description: "Full Git support with commit, branch, merge, and history visualization"
+                .to_string(),
             version: "2.0.1".to_string(),
             author: "Claude Code Team".to_string(),
             author_url: Some("https://github.com/claude-code".to_string()),
             repository_url: Some("https://github.com/claude-code/git-plugin".to_string()),
             documentation_url: Some("https://docs.claude-code.dev/plugins/git".to_string()),
             icon_url: None,
-            tags: vec!["git".to_string(), "version-control".to_string(), "scm".to_string()],
+            tags: vec![
+                "git".to_string(),
+                "version-control".to_string(),
+                "scm".to_string(),
+            ],
             category: PluginCategory::Development,
             downloads: 98_765,
             rating: 4.9,
@@ -325,14 +328,20 @@ fn get_sample_plugins() -> Vec<Plugin> {
         Plugin {
             id: "code-analyzer".to_string(),
             name: "Code Analyzer".to_string(),
-            description: "Static code analysis with support for multiple languages and custom rules".to_string(),
+            description:
+                "Static code analysis with support for multiple languages and custom rules"
+                    .to_string(),
             version: "1.5.0".to_string(),
             author: "Code Quality Inc".to_string(),
             author_url: Some("https://codequality.dev".to_string()),
             repository_url: Some("https://github.com/codequality/analyzer".to_string()),
             documentation_url: Some("https://docs.codequality.dev".to_string()),
             icon_url: None,
-            tags: vec!["analysis".to_string(), "linting".to_string(), "quality".to_string()],
+            tags: vec![
+                "analysis".to_string(),
+                "linting".to_string(),
+                "quality".to_string(),
+            ],
             category: PluginCategory::Development,
             downloads: 45_678,
             rating: 4.5,
@@ -380,7 +389,11 @@ fn get_sample_plugins() -> Vec<Plugin> {
             repository_url: Some("https://github.com/integrations/slack".to_string()),
             documentation_url: Some("https://docs.integrations.dev/slack".to_string()),
             icon_url: None,
-            tags: vec!["slack".to_string(), "notifications".to_string(), "integration".to_string()],
+            tags: vec![
+                "slack".to_string(),
+                "notifications".to_string(),
+                "integration".to_string(),
+            ],
             category: PluginCategory::Integrations,
             downloads: 23_456,
             rating: 4.3,

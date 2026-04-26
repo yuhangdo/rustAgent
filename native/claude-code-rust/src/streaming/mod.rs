@@ -420,7 +420,8 @@ fn parse_openai_usage(value: &Value) -> Option<Usage> {
 }
 
 fn parse_anthropic_usage(value: &Value) -> Option<Usage> {
-    value.get("usage")
+    value
+        .get("usage")
         .or_else(|| value.get("delta").and_then(|delta| delta.get("usage")))
         .and_then(parse_usage_from_value)
 }

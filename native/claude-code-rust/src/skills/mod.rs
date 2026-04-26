@@ -11,9 +11,9 @@
 //! - Built-in skills for common operations
 //! - Skill chaining and composition
 
-pub mod registry;
-pub mod executor;
 pub mod builtin;
+pub mod executor;
+pub mod registry;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,11 @@ pub trait Skill: Send + Sync {
     fn parameter_schema(&self) -> serde_json::Value;
 
     /// Execute the skill
-    async fn execute(&self, params: SkillParams, context: SkillContext) -> Result<SkillResult, SkillError>;
+    async fn execute(
+        &self,
+        params: SkillParams,
+        context: SkillContext,
+    ) -> Result<SkillResult, SkillError>;
 }
 
 /// Skill category
@@ -133,7 +137,7 @@ impl std::fmt::Display for SkillCategory {
     }
 }
 
+pub use builtin::BuiltinSkills;
+pub use executor::SkillExecutor;
 /// Re-exports
 pub use registry::SkillRegistry;
-pub use executor::SkillExecutor;
-pub use builtin::BuiltinSkills;

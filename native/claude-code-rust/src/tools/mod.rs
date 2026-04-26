@@ -1,24 +1,24 @@
 //! Tools Module - File operations, commands, search, etc.
 
-pub mod file_read;
-pub mod file_edit;
-pub mod file_write;
 pub mod execute_command;
-pub mod search;
-pub mod list_files;
+pub mod file_edit;
+pub mod file_read;
+pub mod file_write;
 pub mod git_operations;
-pub mod task_management;
+pub mod list_files;
 pub mod note_edit;
+pub mod search;
+pub mod task_management;
 
-pub use file_read::FileReadTool;
-pub use file_edit::FileEditTool;
-pub use file_write::FileWriteTool;
 pub use execute_command::ExecuteCommandTool;
-pub use search::SearchTool;
-pub use list_files::ListFilesTool;
+pub use file_edit::FileEditTool;
+pub use file_read::FileReadTool;
+pub use file_write::FileWriteTool;
 pub use git_operations::GitOperationsTool;
-pub use task_management::TaskManagementTool;
+pub use list_files::ListFilesTool;
 pub use note_edit::NoteEditTool;
+pub use search::SearchTool;
+pub use task_management::TaskManagementTool;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -84,7 +84,7 @@ impl ToolRegistry {
         let mut registry = Self {
             tools: HashMap::new(),
         };
-        
+
         // Register built-in tools
         registry.register(Box::new(file_read::FileReadTool::new()));
         registry.register(Box::new(file_edit::FileEditTool::new()));
@@ -95,27 +95,31 @@ impl ToolRegistry {
         registry.register(Box::new(git_operations::GitOperationsTool::new()));
         registry.register(Box::new(task_management::TaskManagementTool::new()));
         registry.register(Box::new(note_edit::NoteEditTool::new()));
-        
+
         registry
     }
-    
+
     /// Register a tool
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
     }
-    
+
     /// Get a tool by name
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|b| b.as_ref())
     }
-    
+
     /// List all tools
     pub fn list(&self) -> Vec<&dyn Tool> {
         self.tools.values().map(|b| b.as_ref()).collect()
     }
-    
+
     /// Execute a tool
-    pub async fn execute(&self, name: &str, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
         match self.tools.get(name) {
             Some(tool) => tool.execute(input).await,
             None => Err(ToolError {

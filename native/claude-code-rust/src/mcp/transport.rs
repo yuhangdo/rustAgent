@@ -25,7 +25,7 @@ impl StdioTransport {
             writer: Arc::new(RwLock::new(None)),
         }
     }
-    
+
     pub async fn send(&self, message: &McpMessage) -> anyhow::Result<()> {
         let mut writer = self.writer.write().await;
         if let Some(w) = writer.as_mut() {
@@ -37,12 +37,12 @@ impl StdioTransport {
         }
         Ok(())
     }
-    
+
     pub async fn receive(&self) -> anyhow::Result<Option<McpMessage>> {
         let mut reader = self.reader.write().await;
         if let Some(r) = reader.as_mut() {
             let mut line = String::new();
-            
+
             let mut content_length = 0;
             loop {
                 line.clear();
@@ -55,7 +55,7 @@ impl StdioTransport {
                     content_length = len.parse()?;
                 }
             }
-            
+
             if content_length > 0 {
                 let mut buffer = vec![0u8; content_length];
                 r.read_exact(&mut buffer)?;
@@ -85,21 +85,21 @@ impl TcpTransport {
             receiver: None,
         }
     }
-    
+
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel(100);
         self.sender = Some(tx);
         self.receiver = Some(rx);
         Ok(())
     }
-    
+
     pub async fn send(&self, message: &McpMessage) -> anyhow::Result<()> {
         if let Some(sender) = &self.sender {
             sender.send(message.clone()).await?;
         }
         Ok(())
     }
-    
+
     pub async fn receive(&mut self) -> Option<McpMessage> {
         if let Some(receiver) = &mut self.receiver {
             receiver.recv().await
@@ -121,21 +121,21 @@ impl WebSocketTransport {
             receiver: None,
         }
     }
-    
+
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel(100);
         self.sender = Some(tx);
         self.receiver = Some(rx);
         Ok(())
     }
-    
+
     pub async fn send(&self, message: &McpMessage) -> anyhow::Result<()> {
         if let Some(sender) = &self.sender {
             sender.send(message.clone()).await?;
         }
         Ok(())
     }
-    
+
     pub async fn receive(&mut self) -> Option<McpMessage> {
         if let Some(receiver) = &mut self.receiver {
             receiver.recv().await
@@ -163,7 +163,7 @@ impl TransportConfig {
             url: None,
         }
     }
-    
+
     pub fn tcp(host: &str, port: u16) -> Self {
         Self {
             transport_type: "tcp".to_string(),
@@ -172,7 +172,7 @@ impl TransportConfig {
             url: None,
         }
     }
-    
+
     pub fn websocket(url: &str) -> Self {
         Self {
             transport_type: "websocket".to_string(),

@@ -1,4 +1,4 @@
- //! Application State Module
+//! Application State Module
 
 use crate::config::Settings;
 use std::sync::Arc;

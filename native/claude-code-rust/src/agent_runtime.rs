@@ -6,16 +6,29 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::StreamExt;
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::time::timeout;
 
-use crate::api::{ApiClient, ChatMessage, ToolCall, ToolCallFunction, ToolDefinition, Usage};
+use crate::api::{
+    ApiClient, ApiPromptCacheScope, ApiPromptCacheTextBlock, ChatMessage, PromptCacheMetadata,
+    ToolCall, ToolCallFunction, ToolDefinition, Usage,
+};
+use crate::compact::{
+    full_compact, full_compact_with_summary, micro_compact_history, session_memory_compact,
+    CompactDirection, CompactResult, CompactStrategy,
+};
 use crate::config::Settings;
 use crate::prompting::{
-    ProjectMemorySelectionQuery, ProjectMemorySelector, PromptBudget, PromptBuildRequest,
-    PromptBuilder,
+    ProjectMemorySelectionQuery, ProjectMemorySelector, PromptAssembly, PromptBudget,
+    PromptBuildRequest, PromptBuilder, PromptCacheScope, PromptSection,
 };
 use crate::streaming::{StreamSnapshot, StreamUpdate, StreamingAssembler};
+use crate::token_budget::{
+    effective_budget, evaluate_budget_decision, resolve_context_window, rough_count_messages,
+    rough_count_tools, BudgetSource, TokenBudgetDecision, TokenBudgetState,
+    DEFAULT_MAX_OUTPUT_TOKENS, POST_COMPACT_TOKEN_BUDGET,
+};
 use crate::tools::{ToolError, ToolOutput, ToolRegistry};
 
 const DEFAULT_MAX_ITERATIONS: usize = 8;
@@ -25,6 +38,11 @@ const STREAM_POLL_INTERVAL_MILLIS: u64 = 250;
 const PROJECT_MEMORY_SELECTOR_MODEL: &str = "sonnet";
 const PROJECT_MEMORY_SELECTOR_MAX_TOKENS: usize = 512;
 const PROJECT_MEMORY_SELECTOR_MAX_PATHS: usize = 5;
+const DEFAULT_PROMPT_RECENT_MESSAGE_COUNT: usize = 8;
+const FULL_COMPACT_SUMMARIZER_MODEL: &str = "sonnet";
+const FULL_COMPACT_SUMMARIZER_MAX_TOKENS: usize = 1_024;
+const FULL_COMPACT_SUMMARIZER_MAX_MESSAGES: usize = 80;
+const FULL_COMPACT_SUMMARIZER_MAX_MESSAGE_CHARS: usize = 1_200;
 
 #[derive(Debug, Clone)]
 pub struct AgentExecutionRequest {
@@ -33,6 +51,9 @@ pub struct AgentExecutionRequest {
     pub workspace_root: PathBuf,
     pub already_surfaced_memory_paths: Vec<String>,
     pub max_iterations: usize,
+    pub token_budget_state: Option<TokenBudgetState>,
+    pub additional_system_sections: Vec<PromptSection>,
+    pub additional_user_context_sections: Vec<PromptSection>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +62,7 @@ pub struct AgentExecutionResult {
     pub answer: String,
     pub iterations: usize,
     pub usage_records: Vec<AgentUsageRecord>,
+    pub token_budget_state: Option<TokenBudgetState>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +104,38 @@ pub enum AgentEvent {
     },
     MemorySurfaced {
         paths: Vec<String>,
+    },
+    TokenBudgetWarning {
+        active_tokens: usize,
+        warning_threshold: usize,
+        effective_budget_tokens: usize,
+    },
+    AutoCompactPerformed {
+        strategy: String,
+        before_tokens: usize,
+        after_tokens: usize,
+        compacted_messages: usize,
+        preserved_messages: usize,
+    },
+    AutoCompactFailed {
+        strategy: String,
+        error_summary: String,
+        consecutive_failures: usize,
+    },
+    SessionCompacted {
+        strategy: String,
+        history: Vec<ChatMessage>,
+        system_sections: Vec<PromptSection>,
+        user_context_sections: Vec<PromptSection>,
+        before_tokens: usize,
+        after_tokens: usize,
+        compacted_messages: usize,
+        preserved_messages: usize,
+    },
+    TokenBudgetBlocked {
+        active_tokens: usize,
+        blocking_threshold: usize,
+        effective_budget_tokens: usize,
     },
     FinalAnswer {
         answer: String,
@@ -143,6 +197,20 @@ struct TurnResult {
 }
 
 #[derive(Debug, Clone, Default)]
+struct TurnPromptState {
+    history: Vec<ChatMessage>,
+    additional_system_sections: Vec<PromptSection>,
+    additional_user_context_sections: Vec<PromptSection>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedTurn {
+    history_messages: Vec<ChatMessage>,
+    rendered_messages: Vec<ChatMessage>,
+    prompt_cache_metadata: Option<PromptCacheMetadata>,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct AgentUsageRecord {
     pub prompt_tokens: usize,
     pub completion_tokens: usize,
@@ -187,8 +255,11 @@ impl AgentRuntime {
             system_prompt,
             history,
             workspace_root,
-            already_surfaced_memory_paths,
+            mut already_surfaced_memory_paths,
             max_iterations: requested_max_iterations,
+            token_budget_state,
+            additional_system_sections,
+            additional_user_context_sections,
         } = request;
         let mut latest_reasoning = String::new();
         let mut usage_records = Vec::new();
@@ -198,50 +269,117 @@ impl AgentRuntime {
             requested_max_iterations.min(MAX_ALLOWED_ITERATIONS)
         };
         let tool_definitions = self.tool_definitions();
-        let prompt_request = PromptBuildRequest {
-            base_system_prompt: system_prompt,
-            history,
-            workspace_root: workspace_root.clone(),
-            current_working_dir: Some(self.working_dir.clone()),
-            tool_definitions: tool_definitions.clone(),
-            budget: PromptBudget::default_for(self.max_response_tokens),
-            entrypoint: "rust-agent-runtime".to_string(),
-            version_fingerprint: None,
-            global_config_root: None,
-            memory_enabled: self.memory_enabled,
-            auto_memory_directory: self.auto_memory_directory.clone(),
-            already_surfaced_memory_paths,
-        };
         let memory_selector = ApiProjectMemorySelector {
             client: &self.client,
         };
-        let prompt_assembly =
-            PromptBuilder::build_with_selector(prompt_request, Some(&memory_selector)).await?;
-        if !prompt_assembly.surfaced_memory_paths.is_empty() {
-            event_handler
-                .on_event(AgentEvent::MemorySurfaced {
-                    paths: prompt_assembly.surfaced_memory_paths.clone(),
-                })
-                .await;
-        }
-        let mut messages = prompt_assembly.render().messages;
+        let mut prompt_state = TurnPromptState {
+            history,
+            additional_system_sections,
+            additional_user_context_sections,
+        };
+        let mut token_budget_state = token_budget_state.unwrap_or_else(|| {
+            let context_window_tokens = self.context_window_tokens();
+            TokenBudgetState::new(context_window_tokens, self.max_response_tokens)
+        });
 
         for iteration in 0..max_iterations {
             if cancellation.is_cancelled() {
                 return Ok(AgentExecutionOutcome::Cancelled);
             }
 
+            let prepared_turn = self
+                .prepare_turn_context(
+                    &system_prompt,
+                    &workspace_root,
+                    &tool_definitions,
+                    &mut prompt_state,
+                    &mut already_surfaced_memory_paths,
+                    &mut token_budget_state,
+                    &memory_selector,
+                    event_handler,
+                )
+                .await?;
+
             let turn_result = if self.client.streaming_enabled() {
                 match self
-                    .execute_stream_turn(&messages, &tool_definitions, event_handler, cancellation)
-                    .await?
+                    .execute_stream_turn(
+                        &prepared_turn.history_messages,
+                        &prepared_turn.rendered_messages,
+                        prepared_turn.prompt_cache_metadata.as_ref(),
+                        &tool_definitions,
+                        event_handler,
+                        cancellation,
+                    )
+                    .await
                 {
-                    Some(result) => result,
-                    None => return Ok(AgentExecutionOutcome::Cancelled),
+                    Ok(Some(result)) => result,
+                    Ok(None) => return Ok(AgentExecutionOutcome::Cancelled),
+                    Err(error) if is_prompt_too_long_error(&error) => {
+                        let compact_result = self
+                            .perform_full_compact(
+                                &prompt_state.history,
+                                CompactDirection::UpTo,
+                                None,
+                                DEFAULT_PROMPT_RECENT_MESSAGE_COUNT,
+                            )
+                            .await;
+                        event_handler
+                            .on_event(AgentEvent::AutoCompactPerformed {
+                                strategy: "prompt_too_long_retry".to_string(),
+                                before_tokens: compact_result.before_tokens,
+                                after_tokens: compact_result.after_tokens,
+                                compacted_messages: compact_result.compacted_message_count,
+                                preserved_messages: compact_result.preserved_message_count,
+                            })
+                            .await;
+                        emit_session_compacted_event(event_handler, &compact_result).await;
+                        prompt_state.history = compact_result.history;
+                        prompt_state.additional_system_sections = compact_result.system_sections;
+                        prompt_state.additional_user_context_sections =
+                            compact_result.user_context_sections;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
                 }
             } else {
-                self.execute_non_stream_turn(&messages, &tool_definitions, event_handler)
-                    .await?
+                match self
+                    .execute_non_stream_turn(
+                        &prepared_turn.history_messages,
+                        &prepared_turn.rendered_messages,
+                        prepared_turn.prompt_cache_metadata.as_ref(),
+                        &tool_definitions,
+                        event_handler,
+                    )
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(error) if is_prompt_too_long_error(&error) => {
+                        let compact_result = self
+                            .perform_full_compact(
+                                &prompt_state.history,
+                                CompactDirection::UpTo,
+                                None,
+                                DEFAULT_PROMPT_RECENT_MESSAGE_COUNT,
+                            )
+                            .await;
+                        event_handler
+                            .on_event(AgentEvent::AutoCompactPerformed {
+                                strategy: "prompt_too_long_retry".to_string(),
+                                before_tokens: compact_result.before_tokens,
+                                after_tokens: compact_result.after_tokens,
+                                compacted_messages: compact_result.compacted_message_count,
+                                preserved_messages: compact_result.preserved_message_count,
+                            })
+                            .await;
+                        emit_session_compacted_event(event_handler, &compact_result).await;
+                        prompt_state.history = compact_result.history;
+                        prompt_state.additional_system_sections = compact_result.system_sections;
+                        prompt_state.additional_user_context_sections =
+                            compact_result.user_context_sections;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
             };
 
             if !turn_result.reasoning.trim().is_empty() {
@@ -252,7 +390,9 @@ impl AgentRuntime {
 
             let tool_calls = turn_result.tool_calls;
             if !tool_calls.is_empty() {
-                messages.push(ChatMessage::assistant_with_tools(tool_calls.clone()));
+                prompt_state
+                    .history
+                    .push(ChatMessage::assistant_with_tools(tool_calls.clone()));
 
                 for tool_call in tool_calls {
                     if cancellation.is_cancelled() {
@@ -283,7 +423,7 @@ impl AgentRuntime {
                     {
                         Ok(output) => {
                             let tool_content = tool_output_message(&output);
-                            messages.push(ChatMessage::tool(
+                            prompt_state.history.push(ChatMessage::tool(
                                 tool_call.id.clone(),
                                 tool_content.clone(),
                             ));
@@ -302,7 +442,7 @@ impl AgentRuntime {
                                 "error": error.message,
                                 "code": error.code,
                             });
-                            messages.push(ChatMessage::tool(
+                            prompt_state.history.push(ChatMessage::tool(
                                 tool_call.id.clone(),
                                 error_payload.to_string(),
                             ));
@@ -326,7 +466,9 @@ impl AgentRuntime {
             } else {
                 answer
             };
-            messages.push(ChatMessage::assistant(final_answer.clone()));
+            prompt_state
+                .history
+                .push(ChatMessage::assistant(final_answer.clone()));
             event_handler
                 .on_event(AgentEvent::FinalAnswer {
                     answer: final_answer.clone(),
@@ -338,6 +480,7 @@ impl AgentRuntime {
                 answer: final_answer,
                 iterations: iteration + 1,
                 usage_records,
+                token_budget_state: Some(token_budget_state.clone()),
             }));
         }
 
@@ -355,18 +498,287 @@ impl AgentRuntime {
             .collect()
     }
 
+    fn context_window_tokens(&self) -> usize {
+        resolve_context_window(
+            self.client.get_model(),
+            self.client.provider_kind(),
+            self.client.beta_headers(),
+        )
+    }
+
+    fn prompt_budget(&self, has_compaction_sections: bool) -> PromptBudget {
+        let total_input_tokens = if has_compaction_sections {
+            self.context_window_tokens().min(POST_COMPACT_TOKEN_BUDGET)
+        } else {
+            self.context_window_tokens()
+        };
+
+        PromptBudget {
+            total_input_tokens,
+            reserved_output_tokens: self.max_response_tokens.max(DEFAULT_MAX_OUTPUT_TOKENS),
+            recent_message_count: DEFAULT_PROMPT_RECENT_MESSAGE_COUNT,
+        }
+    }
+
+    async fn choose_compaction(
+        &self,
+        history: &[ChatMessage],
+        recent_message_count: usize,
+    ) -> CompactResult {
+        let best = best_compaction_candidate(history, recent_message_count);
+        if matches!(
+            best.strategy,
+            CompactStrategy::Full | CompactStrategy::PartialUpTo | CompactStrategy::PartialFrom
+        ) {
+            self.perform_full_compact(history, CompactDirection::UpTo, None, recent_message_count)
+                .await
+        } else {
+            best
+        }
+    }
+
+    async fn perform_full_compact(
+        &self,
+        history: &[ChatMessage],
+        direction: CompactDirection,
+        anchor_index: Option<usize>,
+        preserve_recent_messages: usize,
+    ) -> CompactResult {
+        match self
+            .request_full_compaction_summary(
+                history,
+                direction,
+                anchor_index,
+                preserve_recent_messages,
+            )
+            .await
+        {
+            Ok(summary) => full_compact_with_summary(
+                history,
+                direction,
+                anchor_index,
+                preserve_recent_messages,
+                Some(summary.as_str()),
+            ),
+            Err(_) => full_compact(history, direction, anchor_index, preserve_recent_messages),
+        }
+    }
+
+    async fn request_full_compaction_summary(
+        &self,
+        history: &[ChatMessage],
+        direction: CompactDirection,
+        anchor_index: Option<usize>,
+        preserve_recent_messages: usize,
+    ) -> Result<String> {
+        let payload = build_full_compaction_summary_payload(
+            history,
+            direction,
+            anchor_index,
+            preserve_recent_messages,
+        );
+        let response = self
+            .client
+            .chat_with_overrides(
+                build_full_compaction_summary_messages(payload),
+                None,
+                Some(FULL_COMPACT_SUMMARIZER_MODEL),
+                Some(FULL_COMPACT_SUMMARIZER_MAX_TOKENS),
+                Some(0.0),
+            )
+            .await?;
+        let summary = response
+            .choices
+            .first()
+            .and_then(|choice| choice.message.content.as_deref())
+            .map(str::trim)
+            .filter(|content| !content.is_empty())
+            .ok_or_else(|| anyhow!("Full compact summarizer returned no message content"))?;
+
+        Ok(summary.to_string())
+    }
+
+    async fn prepare_turn_context(
+        &self,
+        system_prompt: &str,
+        workspace_root: &Path,
+        tool_definitions: &[ToolDefinition],
+        prompt_state: &mut TurnPromptState,
+        already_surfaced_memory_paths: &mut Vec<String>,
+        token_budget_state: &mut TokenBudgetState,
+        memory_selector: &dyn ProjectMemorySelector,
+        event_handler: &dyn AgentEventHandler,
+    ) -> Result<PreparedTurn> {
+        let auto_compact_enabled = auto_compact_enabled();
+        let mut working_state = prompt_state.clone();
+        let mut performed_compaction = false;
+
+        loop {
+            let budget = self.prompt_budget(
+                !working_state.additional_system_sections.is_empty()
+                    || !working_state.additional_user_context_sections.is_empty(),
+            );
+            token_budget_state.context_window_tokens = budget.total_input_tokens;
+            token_budget_state.effective_budget_tokens =
+                effective_budget(budget.total_input_tokens, budget.reserved_output_tokens);
+
+            let prompt_request = PromptBuildRequest {
+                base_system_prompt: system_prompt.to_string(),
+                history: working_state.history.clone(),
+                workspace_root: workspace_root.to_path_buf(),
+                current_working_dir: Some(self.working_dir.clone()),
+                tool_definitions: tool_definitions.to_vec(),
+                budget,
+                entrypoint: "rust-agent-runtime".to_string(),
+                version_fingerprint: None,
+                global_config_root: None,
+                memory_enabled: self.memory_enabled,
+                auto_memory_directory: self.auto_memory_directory.clone(),
+                already_surfaced_memory_paths: already_surfaced_memory_paths.clone(),
+                additional_system_sections: working_state.additional_system_sections.clone(),
+                additional_user_context_sections: working_state
+                    .additional_user_context_sections
+                    .clone(),
+            };
+            let prompt_assembly =
+                PromptBuilder::build_with_selector(prompt_request, Some(memory_selector)).await?;
+            let surfaced_now = record_new_memory_paths(
+                already_surfaced_memory_paths,
+                prompt_assembly.surfaced_memory_paths.clone(),
+            );
+            if !surfaced_now.is_empty() {
+                event_handler
+                    .on_event(AgentEvent::MemorySurfaced {
+                        paths: surfaced_now,
+                    })
+                    .await;
+            }
+
+            let rendered = prompt_assembly.render();
+            let prompt_cache_metadata = prompt_cache_metadata_from_assembly(&prompt_assembly);
+            let rough_count =
+                rough_count_messages(&rendered.messages) + rough_count_tools(tool_definitions);
+            let exact_count = self
+                .client
+                .count_tokens_with_metadata(
+                    prompt_assembly.history_messages.clone(),
+                    Some(tool_definitions.to_vec()),
+                    None,
+                    prompt_cache_metadata.as_ref(),
+                )
+                .await?;
+            token_budget_state.latest_rough_count = rough_count;
+            token_budget_state.latest_exact_count = exact_count;
+            token_budget_state.blocked = false;
+
+            let source = if performed_compaction {
+                BudgetSource::Compact
+            } else {
+                BudgetSource::Normal
+            };
+            let decision =
+                evaluate_budget_decision(token_budget_state, auto_compact_enabled, source);
+            match decision {
+                TokenBudgetDecision::Proceed => {
+                    *prompt_state = working_state;
+                    return Ok(PreparedTurn {
+                        history_messages: prompt_assembly.history_messages,
+                        rendered_messages: rendered.messages,
+                        prompt_cache_metadata,
+                    });
+                }
+                TokenBudgetDecision::Warn => {
+                    emit_warning_event(token_budget_state, event_handler).await;
+                    token_budget_state.warning_emitted = true;
+                    *prompt_state = working_state;
+                    return Ok(PreparedTurn {
+                        history_messages: prompt_assembly.history_messages,
+                        rendered_messages: rendered.messages,
+                        prompt_cache_metadata,
+                    });
+                }
+                TokenBudgetDecision::Block => {
+                    token_budget_state.blocked = true;
+                    emit_block_event(token_budget_state, event_handler).await;
+                    return Err(anyhow!(
+                        "Prompt token budget exceeded: {} tokens active against a {} token budget.",
+                        token_budget_state.active_count(),
+                        token_budget_state.effective_budget_tokens,
+                    ));
+                }
+                TokenBudgetDecision::AutoCompact => {
+                    let compact_result = self
+                        .choose_compaction(&working_state.history, budget.recent_message_count)
+                        .await;
+                    if compact_result.after_tokens >= compact_result.before_tokens
+                        || compact_result.compacted_message_count == 0
+                    {
+                        token_budget_state.consecutive_autocompact_failures += 1;
+                        event_handler
+                            .on_event(AgentEvent::AutoCompactFailed {
+                                strategy: compact_strategy_label(compact_result.strategy)
+                                    .to_string(),
+                                error_summary: "Compaction did not reduce the prompt budget."
+                                    .to_string(),
+                                consecutive_failures: token_budget_state
+                                    .consecutive_autocompact_failures,
+                            })
+                            .await;
+                        return Err(anyhow!("Auto-compact could not reduce the prompt budget."));
+                    }
+
+                    emit_session_compacted_event(event_handler, &compact_result).await;
+                    working_state.history = compact_result.history;
+                    if !compact_result.system_sections.is_empty() {
+                        working_state.additional_system_sections = compact_result.system_sections;
+                    }
+                    if !compact_result.user_context_sections.is_empty() {
+                        working_state.additional_user_context_sections =
+                            compact_result.user_context_sections;
+                    }
+                    token_budget_state.consecutive_autocompact_failures = 0;
+                    performed_compaction = true;
+                    event_handler
+                        .on_event(AgentEvent::AutoCompactPerformed {
+                            strategy: compact_strategy_label(compact_result.strategy).to_string(),
+                            before_tokens: compact_result.before_tokens,
+                            after_tokens: compact_result.after_tokens,
+                            compacted_messages: compact_result.compacted_message_count,
+                            preserved_messages: compact_result.preserved_message_count,
+                        })
+                        .await;
+                }
+            }
+        }
+    }
+
     async fn execute_non_stream_turn(
         &self,
-        messages: &[ChatMessage],
+        history_messages: &[ChatMessage],
+        rendered_messages: &[ChatMessage],
+        prompt_cache_metadata: Option<&PromptCacheMetadata>,
         tool_definitions: &[ToolDefinition],
         event_handler: &dyn AgentEventHandler,
     ) -> Result<TurnResult> {
+        let request_messages =
+            if self.client.provider_kind() == crate::token_budget::ProviderKind::AnthropicNative {
+                history_messages.to_vec()
+            } else {
+                rendered_messages.to_vec()
+            };
         let response = self
             .client
-            .chat(messages.to_vec(), Some(tool_definitions.to_vec()))
+            .chat_with_slot_strategy_and_metadata(
+                request_messages,
+                Some(tool_definitions.to_vec()),
+                None,
+                None,
+                prompt_cache_metadata,
+            )
             .await?;
 
         let choice = response
+            .response
             .choices
             .first()
             .cloned()
@@ -392,20 +804,32 @@ impl AgentRuntime {
                 .trim()
                 .to_string(),
             tool_calls: choice.message.tool_calls.clone().unwrap_or_default(),
-            usage: response.usage.clone(),
+            usage: response.response.usage.clone(),
         })
     }
 
     async fn execute_stream_turn(
         &self,
-        messages: &[ChatMessage],
+        history_messages: &[ChatMessage],
+        rendered_messages: &[ChatMessage],
+        prompt_cache_metadata: Option<&PromptCacheMetadata>,
         tool_definitions: &[ToolDefinition],
         event_handler: &dyn AgentEventHandler,
         cancellation: &dyn AgentCancellation,
     ) -> Result<Option<TurnResult>> {
+        let request_messages =
+            if self.client.provider_kind() == crate::token_budget::ProviderKind::AnthropicNative {
+                history_messages.to_vec()
+            } else {
+                rendered_messages.to_vec()
+            };
         let response = self
             .client
-            .chat_stream(messages.to_vec(), Some(tool_definitions.to_vec()))
+            .chat_stream_with_metadata(
+                request_messages,
+                Some(tool_definitions.to_vec()),
+                prompt_cache_metadata,
+            )
             .await?;
         let mut byte_stream = response.bytes_stream();
         let mut assembler = StreamingAssembler::new();
@@ -469,6 +893,274 @@ impl AgentRuntime {
 
         Ok(Some(stream_snapshot_into_turn_result(snapshot)?))
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FullCompactSummaryPayload {
+    direction: String,
+    anchor_index: Option<usize>,
+    preserve_recent_messages: usize,
+    compacted_message_count: usize,
+    preserved_message_count: usize,
+    compacted_messages: Vec<Value>,
+    boundary_context: Vec<Value>,
+}
+
+fn best_compaction_candidate(
+    history: &[ChatMessage],
+    recent_message_count: usize,
+) -> CompactResult {
+    let candidates = [
+        micro_compact_history(history, recent_message_count),
+        session_memory_compact(history, recent_message_count),
+        full_compact(history, CompactDirection::UpTo, None, recent_message_count),
+    ];
+
+    candidates
+        .into_iter()
+        .max_by_key(|result| result.before_tokens.saturating_sub(result.after_tokens))
+        .unwrap_or_else(|| micro_compact_history(history, recent_message_count))
+}
+
+fn build_full_compaction_summary_payload(
+    history: &[ChatMessage],
+    direction: CompactDirection,
+    anchor_index: Option<usize>,
+    preserve_recent_messages: usize,
+) -> FullCompactSummaryPayload {
+    let split_index = compact_split_index(
+        history.len(),
+        direction,
+        anchor_index,
+        preserve_recent_messages,
+    );
+    let (compacted_slice, preserved_slice) = match direction {
+        CompactDirection::UpTo => (&history[..split_index], &history[split_index..]),
+        CompactDirection::From => (&history[split_index..], &history[..split_index]),
+    };
+    let boundary_start = split_index.saturating_sub(3);
+    let boundary_end = history.len().min(split_index.saturating_add(3));
+    let boundary_context = history[boundary_start..boundary_end]
+        .iter()
+        .map(serialize_compaction_message)
+        .collect::<Vec<_>>();
+
+    FullCompactSummaryPayload {
+        direction: match direction {
+            CompactDirection::UpTo => "up_to".to_string(),
+            CompactDirection::From => "from".to_string(),
+        },
+        anchor_index,
+        preserve_recent_messages,
+        compacted_message_count: compacted_slice.len(),
+        preserved_message_count: preserved_slice.len(),
+        compacted_messages: compacted_slice
+            .iter()
+            .take(FULL_COMPACT_SUMMARIZER_MAX_MESSAGES)
+            .map(serialize_compaction_message)
+            .collect(),
+        boundary_context,
+    }
+}
+
+fn compact_split_index(
+    history_len: usize,
+    direction: CompactDirection,
+    anchor_index: Option<usize>,
+    preserve_recent_messages: usize,
+) -> usize {
+    match (direction, anchor_index) {
+        (CompactDirection::UpTo, Some(anchor)) => anchor.min(history_len),
+        (CompactDirection::From, Some(anchor)) => anchor.min(history_len),
+        (CompactDirection::UpTo, None) => history_len.saturating_sub(preserve_recent_messages),
+        (CompactDirection::From, None) => preserve_recent_messages.min(history_len),
+    }
+}
+
+fn serialize_compaction_message(message: &ChatMessage) -> Value {
+    let mut value = json!({
+        "role": message.role,
+    });
+    if let Some(content) = &message.content {
+        value["content"] = Value::String(summarize_text(
+            content,
+            FULL_COMPACT_SUMMARIZER_MAX_MESSAGE_CHARS,
+        ));
+    }
+    if let Some(reasoning) = &message.reasoning_content {
+        value["reasoning"] = Value::String(summarize_text(
+            reasoning,
+            FULL_COMPACT_SUMMARIZER_MAX_MESSAGE_CHARS,
+        ));
+    }
+    if let Some(tool_calls) = &message.tool_calls {
+        value["tool_calls"] = Value::Array(
+            tool_calls
+                .iter()
+                .map(|tool_call| {
+                    json!({
+                        "id": tool_call.id,
+                        "name": tool_call.function.name,
+                        "arguments": summarize_text(
+                            &tool_call.function.arguments,
+                            FULL_COMPACT_SUMMARIZER_MAX_MESSAGE_CHARS,
+                        ),
+                    })
+                })
+                .collect(),
+        );
+    }
+    if let Some(tool_call_id) = &message.tool_call_id {
+        value["tool_call_id"] = Value::String(tool_call_id.clone());
+    }
+    value
+}
+
+fn build_full_compaction_summary_messages(payload: FullCompactSummaryPayload) -> Vec<ChatMessage> {
+    let request = json!({
+        "task": "Summarize a compacted conversation segment for another coding agent.",
+        "constraints": {
+            "return_format": "markdown_only",
+            "preserve_file_paths": true,
+            "preserve_commands": true,
+            "preserve_open_questions": true,
+            "preserve_tool_results": true,
+            "no_code_fences": true,
+        },
+        "segment": payload,
+    });
+
+    vec![
+        ChatMessage::system(
+            "You compress conversation history for another coding agent. Return concise markdown only. Capture goals, confirmed facts, file paths, commands, tool outcomes, blockers, and unresolved questions. Do not invent details.",
+        ),
+        ChatMessage::user(
+            serde_json::to_string_pretty(&request).unwrap_or_else(|_| request.to_string()),
+        ),
+    ]
+}
+
+async fn emit_session_compacted_event(
+    event_handler: &dyn AgentEventHandler,
+    compact_result: &CompactResult,
+) {
+    event_handler
+        .on_event(AgentEvent::SessionCompacted {
+            strategy: compact_strategy_label(compact_result.strategy).to_string(),
+            history: compact_result.history.clone(),
+            system_sections: compact_result.system_sections.clone(),
+            user_context_sections: compact_result.user_context_sections.clone(),
+            before_tokens: compact_result.before_tokens,
+            after_tokens: compact_result.after_tokens,
+            compacted_messages: compact_result.compacted_message_count,
+            preserved_messages: compact_result.preserved_message_count,
+        })
+        .await;
+}
+
+fn record_new_memory_paths(
+    existing_paths: &mut Vec<String>,
+    surfaced_paths: Vec<String>,
+) -> Vec<String> {
+    let mut new_paths = Vec::new();
+    for path in surfaced_paths {
+        if existing_paths.contains(&path) {
+            continue;
+        }
+        existing_paths.push(path.clone());
+        new_paths.push(path);
+    }
+    new_paths
+}
+
+async fn emit_warning_event(
+    token_budget_state: &TokenBudgetState,
+    event_handler: &dyn AgentEventHandler,
+) {
+    let thresholds = token_budget_state.thresholds();
+    event_handler
+        .on_event(AgentEvent::TokenBudgetWarning {
+            active_tokens: token_budget_state.active_count(),
+            warning_threshold: thresholds.warning_tokens,
+            effective_budget_tokens: token_budget_state.effective_budget_tokens,
+        })
+        .await;
+}
+
+async fn emit_block_event(
+    token_budget_state: &TokenBudgetState,
+    event_handler: &dyn AgentEventHandler,
+) {
+    let thresholds = token_budget_state.thresholds();
+    event_handler
+        .on_event(AgentEvent::TokenBudgetBlocked {
+            active_tokens: token_budget_state.active_count(),
+            blocking_threshold: thresholds.blocking_tokens,
+            effective_budget_tokens: token_budget_state.effective_budget_tokens,
+        })
+        .await;
+}
+
+fn compact_strategy_label(strategy: CompactStrategy) -> &'static str {
+    match strategy {
+        CompactStrategy::Micro => "micro",
+        CompactStrategy::SessionMemory => "session_memory",
+        CompactStrategy::Full => "full",
+        CompactStrategy::PartialUpTo => "partial_up_to",
+        CompactStrategy::PartialFrom => "partial_from",
+    }
+}
+
+fn auto_compact_enabled() -> bool {
+    !std::env::var("CLAUDE_CODE_DISABLE_AUTOCOMPACT")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
+fn prompt_cache_metadata_from_assembly(assembly: &PromptAssembly) -> Option<PromptCacheMetadata> {
+    let system_blocks = assembly
+        .system_sections
+        .iter()
+        .map(|section| ApiPromptCacheTextBlock {
+            text: section.content.clone(),
+            cache_scope: map_prompt_cache_scope(section.cache_scope),
+        })
+        .collect::<Vec<_>>();
+    let prepended_user_context_blocks = assembly
+        .user_context_sections
+        .iter()
+        .map(|section| ApiPromptCacheTextBlock {
+            text: section.content.clone(),
+            cache_scope: map_prompt_cache_scope(section.cache_scope),
+        })
+        .collect::<Vec<_>>();
+
+    if system_blocks.is_empty() && prepended_user_context_blocks.is_empty() {
+        None
+    } else {
+        Some(PromptCacheMetadata {
+            system_blocks,
+            prepended_user_context_blocks,
+            explicit_tool_cache_breakpoint: true,
+            top_level_auto_cache: true,
+        })
+    }
+}
+
+fn map_prompt_cache_scope(scope: PromptCacheScope) -> ApiPromptCacheScope {
+    match scope {
+        PromptCacheScope::None => ApiPromptCacheScope::None,
+        PromptCacheScope::Global => ApiPromptCacheScope::Global,
+        PromptCacheScope::Org => ApiPromptCacheScope::Org,
+    }
+}
+
+fn is_prompt_too_long_error(error: &anyhow::Error) -> bool {
+    let lower = error.to_string().to_ascii_lowercase();
+    lower.contains("prompt too long")
+        || lower.contains("prompt is too long")
+        || lower.contains("context length")
+        || lower.contains("maximum context length")
 }
 
 struct ApiProjectMemorySelector<'a> {
@@ -789,5 +1481,52 @@ mod tests {
         .expect("selector paths");
 
         assert_eq!(paths, vec!["notes/auth.md", "runbooks/deploy.md"]);
+    }
+
+    #[test]
+    fn choose_compaction_prefers_reduction_over_noop() {
+        let history = vec![
+            ChatMessage::assistant_with_tools(vec![ToolCall {
+                id: "call_1".to_string(),
+                r#type: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "search".to_string(),
+                    arguments: r#"{"path":"src","pattern":"auth"}"#.to_string(),
+                },
+            }]),
+            ChatMessage::tool("call_1", "search results ".repeat(300)),
+            ChatMessage::user("latest question"),
+        ];
+
+        let result = best_compaction_candidate(&history, 1);
+
+        assert!(result.after_tokens < result.before_tokens);
+    }
+
+    #[test]
+    fn full_compact_summary_payload_respects_direction_and_boundary() {
+        let history = vec![
+            ChatMessage::user("prefix"),
+            ChatMessage::assistant("stable context"),
+            ChatMessage::user("tail"),
+            ChatMessage::assistant("details"),
+        ];
+
+        let payload =
+            build_full_compaction_summary_payload(&history, CompactDirection::From, Some(2), 1);
+
+        assert_eq!(payload.direction, "from");
+        assert_eq!(payload.compacted_message_count, 2);
+        assert_eq!(payload.preserved_message_count, 2);
+        assert!(!payload.boundary_context.is_empty());
+    }
+
+    #[test]
+    fn prompt_too_long_error_detector_matches_common_provider_messages() {
+        let error = anyhow!("API error (400): prompt is too long for this model");
+        let other = anyhow!("network timeout");
+
+        assert!(is_prompt_too_long_error(&error));
+        assert!(!is_prompt_too_long_error(&other));
     }
 }

@@ -1,7 +1,7 @@
 //! JavaScript Bridge - Utilities for JS interop
 
+use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::prelude::*;
-use js_sys::{Promise, Function, Object, Reflect};
 
 /// Bridge for calling JavaScript functions from Rust
 pub struct JsBridge;
@@ -11,7 +11,7 @@ impl JsBridge {
     pub fn call_function(name: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
         let window = web_sys::window().ok_or("No window object")?;
         let func = Reflect::get(&window, &JsValue::from_str(name))?;
-        
+
         if func.is_undefined() || func.is_null() {
             return Err(JsValue::from_str(&format!("Function {} not found", name)));
         }
@@ -21,13 +21,9 @@ impl JsBridge {
     }
 
     /// Call a method on a JavaScript object
-    pub fn call_method(
-        obj: &JsValue,
-        method: &str,
-        args: &[JsValue],
-    ) -> Result<JsValue, JsValue> {
+    pub fn call_method(obj: &JsValue, method: &str, args: &[JsValue]) -> Result<JsValue, JsValue> {
         let method = Reflect::get(obj, &JsValue::from_str(method))?;
-        
+
         if method.is_undefined() || method.is_null() {
             return Err(JsValue::from_str(&format!("Method {} not found", method)));
         }
@@ -94,18 +90,16 @@ impl JsBridge {
 
     /// Show a browser prompt dialog
     pub fn prompt(message: &str, default: Option<&str>) -> Option<String> {
-        web_sys::window()
-            .and_then(|w| {
-                w.prompt_with_message_and_default(message, default.unwrap_or(""))
-                    .ok()
-                    .flatten()
-            })
+        web_sys::window().and_then(|w| {
+            w.prompt_with_message_and_default(message, default.unwrap_or(""))
+                .ok()
+                .flatten()
+        })
     }
 
     /// Get the current URL
     pub fn current_url() -> Option<String> {
-        web_sys::window()
-            .and_then(|w| w.location().href().ok())
+        web_sys::window().and_then(|w| w.location().href().ok())
     }
 
     /// Navigate to a URL
@@ -125,8 +119,7 @@ impl JsBridge {
 
     /// Open a new window/tab
     pub fn open(url: &str, target: &str) -> Option<web_sys::Window> {
-        web_sys::window()
-            .and_then(|w| w.open_with_url_and_target(url, target).ok().flatten())
+        web_sys::window().and_then(|w| w.open_with_url_and_target(url, target).ok().flatten())
     }
 
     /// Get the user agent string
@@ -153,10 +146,12 @@ impl JsBridge {
     {
         let closure = Closure::once_into_js(callback);
         web_sys::window()
-            .map(|w| w.set_timeout_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                delay_ms,
-            ))
+            .map(|w| {
+                w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                    closure.as_ref().unchecked_ref(),
+                    delay_ms,
+                )
+            })
             .unwrap_or(Ok(-1))
             .unwrap_or(-1)
     }
@@ -175,13 +170,15 @@ impl JsBridge {
     {
         let closure = Closure::wrap(Box::new(callback) as Box<dyn FnMut()>);
         let handle = web_sys::window()
-            .map(|w| w.set_interval_with_callback_and_timeout_and_arguments_0(
-                closure.as_ref().unchecked_ref(),
-                interval_ms,
-            ))
+            .map(|w| {
+                w.set_interval_with_callback_and_timeout_and_arguments_0(
+                    closure.as_ref().unchecked_ref(),
+                    interval_ms,
+                )
+            })
             .unwrap_or(Ok(-1))
             .unwrap_or(-1);
-        
+
         closure.forget();
         handle
     }
@@ -200,9 +197,12 @@ impl JsBridge {
     {
         let closure = Closure::wrap(Box::new(callback) as Box<dyn FnMut(f64)>);
         let handle = web_sys::window()
-            .and_then(|w| w.request_animation_frame(closure.as_ref().unchecked_ref()).ok())
+            .and_then(|w| {
+                w.request_animation_frame(closure.as_ref().unchecked_ref())
+                    .ok()
+            })
             .unwrap_or(0);
-        
+
         closure.forget();
         handle
     }
@@ -219,10 +219,10 @@ impl JsBridge {
         let window = web_sys::window().ok_or("No window")?;
         let navigator = window.navigator();
         let clipboard = navigator.clipboard().ok_or("Clipboard not available")?;
-        
+
         let promise = clipboard.write_text(text);
         wasm_bindgen_futures::JsFuture::from(promise).await?;
-        
+
         Ok(())
     }
 
@@ -231,11 +231,13 @@ impl JsBridge {
         let window = web_sys::window().ok_or("No window")?;
         let navigator = window.navigator();
         let clipboard = navigator.clipboard().ok_or("Clipboard not available")?;
-        
+
         let promise = clipboard.read_text();
         let result = wasm_bindgen_futures::JsFuture::from(promise).await?;
-        
-        result.as_string().ok_or_else(|| JsValue::from_str("Failed to read clipboard"))
+
+        result
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("Failed to read clipboard"))
     }
 
     /// Get the current language
@@ -266,7 +268,9 @@ impl JsBridge {
 /// Utility trait for converting between Rust and JavaScript types
 pub trait JsConvert {
     fn to_js_value(&self) -> JsValue;
-    fn from_js_value(value: &JsValue) -> Option<Self> where Self: Sized;
+    fn from_js_value(value: &JsValue) -> Option<Self>
+    where
+        Self: Sized;
 }
 
 impl JsConvert for String {
@@ -327,11 +331,8 @@ impl EventListener {
         F: FnMut(web_sys::Event) + 'static,
     {
         let closure = Closure::wrap(Box::new(callback) as Box<dyn FnMut(_)>);
-        
-        target.add_event_listener_with_callback(
-            event_type,
-            closure.as_ref().unchecked_ref(),
-        )?;
+
+        target.add_event_listener_with_callback(event_type, closure.as_ref().unchecked_ref())?;
 
         Ok(Self {
             target: target.clone(),

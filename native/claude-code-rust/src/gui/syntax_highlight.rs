@@ -1,13 +1,13 @@
 //! Syntax Highlighting - Code block syntax highlighting using syntect
 
-use egui::{Color32, TextFormat, FontId, FontFamily, Stroke};
+use egui::{Color32, FontFamily, FontId, Stroke, TextFormat};
+use std::sync::OnceLock;
 use syntect::{
     easy::HighlightLines,
-    highlighting::{ThemeSet, Style as SyntectStyle, Color as SyntectColor},
+    highlighting::{Color as SyntectColor, Style as SyntectStyle, ThemeSet},
     parsing::SyntaxSet,
     util::LinesWithEndings,
 };
-use std::sync::OnceLock;
 
 /// Global syntax set (initialized once)
 static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -71,23 +71,27 @@ impl CodeHighlighter {
         }
 
         // Try to find syntax by name or extension
-        self.syntax_set.find_syntax_by_token(lang)
+        self.syntax_set
+            .find_syntax_by_token(lang)
             .or_else(|| self.syntax_set.find_syntax_by_extension(lang))
             .or_else(|| self.syntax_set.find_syntax_by_name(lang))
     }
 
     /// Highlight code and return formatted text
-    pub fn highlight(&self,
+    pub fn highlight(
+        &self,
         code: &str,
         language: Option<&str>,
         is_dark: bool,
-    ) -> Vec<(egui::text::LayoutJob, usize)> {  // (job, line_count)
+    ) -> Vec<(egui::text::LayoutJob, usize)> {
+        // (job, line_count)
         let theme_name = get_theme_name(is_dark);
         let theme = &self.theme_set.themes[theme_name];
 
         let syntax = language
             .and_then(|lang| {
-                self.syntax_set.find_syntax_by_token(lang)
+                self.syntax_set
+                    .find_syntax_by_token(lang)
                     .or_else(|| self.syntax_set.find_syntax_by_extension(lang))
             })
             .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
@@ -97,7 +101,8 @@ impl CodeHighlighter {
         let mut lines = Vec::new();
 
         for line in LinesWithEndings::from(code) {
-            let highlighted = highlighter.highlight_line(line, self.syntax_set)
+            let highlighted = highlighter
+                .highlight_line(line, self.syntax_set)
                 .unwrap_or_default();
 
             let mut job = egui::text::LayoutJob::default();
@@ -123,21 +128,31 @@ impl CodeHighlighter {
             Color32::from_rgb(50, 50, 50)
         };
 
-        job.append(code, 0.0, TextFormat {
-            font_id: FontId::new(13.0, FontFamily::Monospace),
-            color: text_color,
-            ..Default::default()
-        });
+        job.append(
+            code,
+            0.0,
+            TextFormat {
+                font_id: FontId::new(13.0, FontFamily::Monospace),
+                color: text_color,
+                ..Default::default()
+            },
+        );
 
         job
     }
 
     /// Get available language names for dropdown
     pub fn available_languages(&self) -> Vec<(&str, &str)> {
-        let mut languages: Vec<(&str, &str)> = self.syntax_set
+        let mut languages: Vec<(&str, &str)> = self
+            .syntax_set
             .syntaxes()
             .iter()
-            .map(|s| (s.name.as_str(), s.file_extensions.first().map(|e| e.as_str()).unwrap_or("")))
+            .map(|s| {
+                (
+                    s.name.as_str(),
+                    s.file_extensions.first().map(|e| e.as_str()).unwrap_or(""),
+                )
+            })
             .collect();
 
         languages.sort_by(|a, b| a.0.cmp(b.0));
@@ -202,18 +217,90 @@ pub fn get_simple_code_style(language: &str, is_dark: bool) -> (Color32, Color32
     // (background, text_color)
 
     let language_colors: [(&str, (Color32, Color32)); 12] = [
-        ("rust", (Color32::from_rgb(50, 30, 30), Color32::from_rgb(255, 180, 180))),
-        ("python", (Color32::from_rgb(30, 50, 70), Color32::from_rgb(180, 210, 255))),
-        ("javascript", (Color32::from_rgb(50, 50, 30), Color32::from_rgb(255, 255, 180))),
-        ("typescript", (Color32::from_rgb(30, 50, 70), Color32::from_rgb(100, 150, 255))),
-        ("html", (Color32::from_rgb(50, 30, 30), Color32::from_rgb(255, 150, 150))),
-        ("css", (Color32::from_rgb(30, 40, 60), Color32::from_rgb(150, 200, 255))),
-        ("json", (Color32::from_rgb(40, 45, 40), Color32::from_rgb(180, 255, 180))),
-        ("yaml", (Color32::from_rgb(40, 50, 40), Color32::from_rgb(200, 255, 200))),
-        ("toml", (Color32::from_rgb(50, 40, 30), Color32::from_rgb(255, 200, 150))),
-        ("bash", (Color32::from_rgb(30, 30, 30), Color32::from_rgb(200, 200, 200))),
-        ("shell", (Color32::from_rgb(30, 30, 30), Color32::from_rgb(200, 200, 200))),
-        ("markdown", (Color32::from_rgb(45, 45, 45), Color32::from_rgb(220, 220, 220))),
+        (
+            "rust",
+            (
+                Color32::from_rgb(50, 30, 30),
+                Color32::from_rgb(255, 180, 180),
+            ),
+        ),
+        (
+            "python",
+            (
+                Color32::from_rgb(30, 50, 70),
+                Color32::from_rgb(180, 210, 255),
+            ),
+        ),
+        (
+            "javascript",
+            (
+                Color32::from_rgb(50, 50, 30),
+                Color32::from_rgb(255, 255, 180),
+            ),
+        ),
+        (
+            "typescript",
+            (
+                Color32::from_rgb(30, 50, 70),
+                Color32::from_rgb(100, 150, 255),
+            ),
+        ),
+        (
+            "html",
+            (
+                Color32::from_rgb(50, 30, 30),
+                Color32::from_rgb(255, 150, 150),
+            ),
+        ),
+        (
+            "css",
+            (
+                Color32::from_rgb(30, 40, 60),
+                Color32::from_rgb(150, 200, 255),
+            ),
+        ),
+        (
+            "json",
+            (
+                Color32::from_rgb(40, 45, 40),
+                Color32::from_rgb(180, 255, 180),
+            ),
+        ),
+        (
+            "yaml",
+            (
+                Color32::from_rgb(40, 50, 40),
+                Color32::from_rgb(200, 255, 200),
+            ),
+        ),
+        (
+            "toml",
+            (
+                Color32::from_rgb(50, 40, 30),
+                Color32::from_rgb(255, 200, 150),
+            ),
+        ),
+        (
+            "bash",
+            (
+                Color32::from_rgb(30, 30, 30),
+                Color32::from_rgb(200, 200, 200),
+            ),
+        ),
+        (
+            "shell",
+            (
+                Color32::from_rgb(30, 30, 30),
+                Color32::from_rgb(200, 200, 200),
+            ),
+        ),
+        (
+            "markdown",
+            (
+                Color32::from_rgb(45, 45, 45),
+                Color32::from_rgb(220, 220, 220),
+            ),
+        ),
     ];
 
     let lang_lower = language.to_lowercase();
@@ -226,27 +313,34 @@ pub fn get_simple_code_style(language: &str, is_dark: bool) -> (Color32, Color32
 
     // Default colors
     if is_dark {
-        (Color32::from_rgb(35, 35, 35), Color32::from_rgb(220, 220, 220))
+        (
+            Color32::from_rgb(35, 35, 35),
+            Color32::from_rgb(220, 220, 220),
+        )
     } else {
-        (Color32::from_rgb(245, 245, 245), Color32::from_rgb(50, 50, 50))
+        (
+            Color32::from_rgb(245, 245, 245),
+            Color32::from_rgb(50, 50, 50),
+        )
     }
 }
 
 /// Format a code block with optional highlighting
-pub fn format_code_block(
-    ui: &mut egui::Ui,
-    code: &str,
-    language: Option<&str>,
-    is_dark: bool,
-) {
+pub fn format_code_block(ui: &mut egui::Ui, code: &str, language: Option<&str>, is_dark: bool) {
     let highlighter = CodeHighlighter::new();
     let (bg_color, text_color) = language
         .map(|l| get_simple_code_style(l, is_dark))
         .unwrap_or_else(|| {
             if is_dark {
-                (Color32::from_rgb(35, 35, 35), Color32::from_rgb(220, 220, 220))
+                (
+                    Color32::from_rgb(35, 35, 35),
+                    Color32::from_rgb(220, 220, 220),
+                )
             } else {
-                (Color32::from_rgb(245, 245, 245), Color32::from_rgb(50, 50, 50))
+                (
+                    Color32::from_rgb(245, 245, 245),
+                    Color32::from_rgb(50, 50, 50),
+                )
             }
         });
 
@@ -265,7 +359,7 @@ pub fn format_code_block(
                         egui::RichText::new(lang.to_uppercase())
                             .size(10.0)
                             .color(text_color.linear_multiply(0.7))
-                            .monospace()
+                            .monospace(),
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

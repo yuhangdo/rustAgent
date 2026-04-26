@@ -1,11 +1,11 @@
 //! WASM API Client - Browser-compatible API client
 
+use crate::api::build_chat_completions_url;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Request, RequestInit, RequestMode, Response};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use crate::api::build_chat_completions_url;
 
 /// WASM-compatible API client
 pub struct WasmApiClient {
@@ -57,7 +57,7 @@ impl WasmApiClient {
         });
 
         let response = self.send_request(&request_body).await?;
-        
+
         // Parse response
         let content = response["choices"][0]["message"]["content"]
             .as_str()
@@ -90,20 +90,18 @@ impl WasmApiClient {
         });
 
         let response = self.send_request_stream(&request_body).await?;
-        
+
         // Process stream chunks
-        let reader = response.body()
-            .ok_or("Response body is null")?
-            .get_reader();
+        let reader = response.body().ok_or("Response body is null")?.get_reader();
 
         let mut decoder = web_sys::TextDecoder::new()?;
-        
+
         loop {
             let chunk = JsFuture::from(reader.read()?).await?;
             let done = js_sys::Reflect::get(&chunk, &JsValue::from_str("done"))?
                 .as_bool()
                 .unwrap_or(true);
-            
+
             if done {
                 break;
             }
@@ -111,7 +109,7 @@ impl WasmApiClient {
             let value = js_sys::Reflect::get(&chunk, &JsValue::from_str("value"))?;
             let data = js_sys::Uint8Array::from(&value);
             let text = decoder.decode_with_uint8_array(&data)?;
-            
+
             // Parse SSE format
             for line in text.lines() {
                 if line.starts_with("data: ") {
@@ -119,7 +117,7 @@ impl WasmApiClient {
                     if data == "[DONE]" {
                         break;
                     }
-                    
+
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
                         if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                             callback(content.to_string());
@@ -134,52 +132,62 @@ impl WasmApiClient {
 
     async fn send_request(&self, body: &serde_json::Value) -> Result<serde_json::Value, JsValue> {
         let window = web_sys::window().ok_or("No window object")?;
-        
+
         let mut opts = RequestInit::new("POST");
         opts.mode(RequestMode::Cors);
-        
+
         let body_str = body.to_string();
         opts.body(Some(&JsValue::from_str(&body_str)));
 
         let url = build_chat_completions_url(&self.base_url);
         let request = Request::new_with_str_and_init(&url, &opts)?;
-        
-        request.headers().set("Authorization", &format!("Bearer {}", self.api_key))?;
+
+        request
+            .headers()
+            .set("Authorization", &format!("Bearer {}", self.api_key))?;
         request.headers().set("Content-Type", "application/json")?;
 
         let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
         let resp: Response = resp_value.dyn_into()?;
-        
+
         let json = JsFuture::from(resp.json()?).await?;
-        let json_str = js_sys::JSON::stringify(&json)?.as_string().unwrap_or_default();
-        
+        let json_str = js_sys::JSON::stringify(&json)?
+            .as_string()
+            .unwrap_or_default();
+
         serde_json::from_str(&json_str)
             .map_err(|e| JsValue::from_str(&format!("JSON parse error: {}", e)))
     }
 
     async fn send_request_stream(&self, body: &serde_json::Value) -> Result<Response, JsValue> {
         let window = web_sys::window().ok_or("No window object")?;
-        
+
         let mut opts = RequestInit::new("POST");
         opts.mode(RequestMode::Cors);
-        
+
         let body_str = body.to_string();
         opts.body(Some(&JsValue::from_str(&body_str)));
 
         let url = build_chat_completions_url(&self.base_url);
         let request = Request::new_with_str_and_init(&url, &opts)?;
-        
-        request.headers().set("Authorization", &format!("Bearer {}", self.api_key))?;
+
+        request
+            .headers()
+            .set("Authorization", &format!("Bearer {}", self.api_key))?;
         request.headers().set("Content-Type", "application/json")?;
         request.headers().set("Accept", "text/event-stream")?;
 
         let resp_value = JsFuture::from(window.fetch_with_request(&request)).await?;
         let resp: Response = resp_value.dyn_into()?;
-        
+
         Ok(resp)
     }
 
-    pub async fn execute_tool(&self, tool_name: &str, params: serde_json::Value) -> Result<serde_json::Value, JsValue> {
+    pub async fn execute_tool(
+        &self,
+        tool_name: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, JsValue> {
         match tool_name {
             "read_file" => self.tool_read_file(params).await,
             "write_file" => self.tool_write_file(params).await,
@@ -189,13 +197,16 @@ impl WasmApiClient {
         }
     }
 
-    async fn tool_read_file(&self, params: serde_json::Value) -> Result<serde_json::Value, JsValue> {
+    async fn tool_read_file(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, JsValue> {
         let path = params["path"].as_str().ok_or("Missing path parameter")?;
-        
+
         // Use browser File System Access API if available
         let window = web_sys::window().ok_or("No window object")?;
         let navigator = window.navigator();
-        
+
         // For now, return a placeholder
         Ok(json!({
             "success": true,
@@ -203,10 +214,15 @@ impl WasmApiClient {
         }))
     }
 
-    async fn tool_write_file(&self, params: serde_json::Value) -> Result<serde_json::Value, JsValue> {
+    async fn tool_write_file(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, JsValue> {
         let path = params["path"].as_str().ok_or("Missing path parameter")?;
-        let content = params["content"].as_str().ok_or("Missing content parameter")?;
-        
+        let content = params["content"]
+            .as_str()
+            .ok_or("Missing content parameter")?;
+
         Ok(json!({
             "success": true,
             "message": format!("File written to: {}", path)
@@ -215,7 +231,7 @@ impl WasmApiClient {
 
     async fn tool_search(&self, params: serde_json::Value) -> Result<serde_json::Value, JsValue> {
         let query = params["query"].as_str().ok_or("Missing query parameter")?;
-        
+
         Ok(json!({
             "success": true,
             "results": [],
@@ -223,9 +239,14 @@ impl WasmApiClient {
         }))
     }
 
-    async fn tool_execute_command(&self, params: serde_json::Value) -> Result<serde_json::Value, JsValue> {
-        let command = params["command"].as_str().ok_or("Missing command parameter")?;
-        
+    async fn tool_execute_command(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, JsValue> {
+        let command = params["command"]
+            .as_str()
+            .ok_or("Missing command parameter")?;
+
         // Commands cannot be executed in browser WASM
         Ok(json!({
             "success": false,

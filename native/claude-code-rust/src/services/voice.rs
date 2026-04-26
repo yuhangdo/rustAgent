@@ -4,15 +4,14 @@
 //! for in-process mic access. Falls back to SoX `rec` or arecord (ALSA)
 //! on Linux if the native module is unavailable.
 
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use serde::{Deserialize, Serialize};
 
 use crate::state::AppState;
 
 const RECORDING_SAMPLE_RATE: u32 = 16000;
 const RECORDING_CHANNELS: u16 = 1;
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VoiceBackend {
@@ -96,7 +95,7 @@ impl VoiceService {
             if self.check_alsa().await {
                 return VoiceBackend::Native;
             }
-            
+
             if self.check_arecord().await {
                 return VoiceBackend::Arecord;
             }
@@ -152,7 +151,7 @@ impl VoiceService {
 
     pub async fn start_recording(&self) -> anyhow::Result<()> {
         let mut state = self.recording_state.write().await;
-        
+
         if *state != RecordingState::Idle {
             return Err(anyhow::anyhow!("Already recording or processing"));
         }
@@ -175,7 +174,7 @@ impl VoiceService {
 
     pub async fn stop_recording(&self) -> anyhow::Result<Vec<u8>> {
         let mut state = self.recording_state.write().await;
-        
+
         if *state != RecordingState::Recording {
             return Err(anyhow::anyhow!("Not currently recording"));
         }
@@ -201,9 +200,9 @@ impl VoiceService {
 
         let state = self.state.read().await;
         let api_client = crate::api::ApiClient::new(state.settings.clone());
-        
+
         let prompt = "Please transcribe the following audio. The audio contains speech that should be converted to text. Only output the transcribed text, nothing else.";
-        
+
         let messages = vec![
             crate::api::ChatMessage {
                 role: "system".to_string(),
@@ -222,7 +221,7 @@ impl VoiceService {
         ];
 
         let response = api_client.chat(messages, None).await?;
-        
+
         if let Some(choice) = response.choices.first() {
             return Ok(choice.message.content.clone().unwrap_or_default());
         }
@@ -234,7 +233,7 @@ impl VoiceService {
         let backend = self.check_availability().await;
         let state = self.recording_state.read().await;
         let start_time = self.start_time.read().await;
-        
+
         let duration = if *state == RecordingState::Recording {
             start_time.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0)
         } else {

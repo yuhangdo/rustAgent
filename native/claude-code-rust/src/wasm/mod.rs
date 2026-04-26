@@ -3,16 +3,16 @@
 //! This module provides WebAssembly bindings for running Claude Code
 //! in web browsers with JavaScript interop.
 
-use wasm_bindgen::prelude::*;
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
+pub mod bridge;
 pub mod client;
 pub mod storage;
-pub mod bridge;
 
+pub use bridge::JsBridge;
 pub use client::WasmApiClient;
 pub use storage::BrowserStorage;
-pub use bridge::JsBridge;
 
 /// Initialize the WASM module
 #[wasm_bindgen(start)]
@@ -40,17 +40,21 @@ impl ClaudeCodeWasm {
 
     /// Send a chat message and get response
     pub async fn chat(&self, message: String) -> Result<JsValue, JsValue> {
-        let response = self.client
+        let response = self
+            .client
             .chat(message)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
-        serde_wasm_bindgen::to_value(&response)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&response).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Stream chat response
-    pub async fn chat_stream(&self, message: String, callback: js_sys::Function) -> Result<(), JsValue> {
+    pub async fn chat_stream(
+        &self,
+        message: String,
+        callback: js_sys::Function,
+    ) -> Result<(), JsValue> {
         self.client
             .chat_stream(message, |chunk| {
                 let _ = callback.call1(&JsValue::NULL, &JsValue::from_str(&chunk));
@@ -72,24 +76,27 @@ impl ClaudeCodeWasm {
     }
 
     /// Execute a tool in the browser environment
-    pub async fn execute_tool(&self, tool_name: String, params: JsValue) -> Result<JsValue, JsValue> {
+    pub async fn execute_tool(
+        &self,
+        tool_name: String,
+        params: JsValue,
+    ) -> Result<JsValue, JsValue> {
         let params: serde_json::Value = serde_wasm_bindgen::from_value(params)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
-        let result = self.client
+
+        let result = self
+            .client
             .execute_tool(&tool_name, params)
             .await
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        
-        serde_wasm_bindgen::to_value(&result)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+
+        serde_wasm_bindgen::to_value(&result).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Get conversation history
     pub fn get_history(&self) -> Result<JsValue, JsValue> {
         let history = self.client.get_history();
-        serde_wasm_bindgen::to_value(&history)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_wasm_bindgen::to_value(&history).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Clear conversation history

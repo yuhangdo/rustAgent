@@ -8,10 +8,13 @@
 //! - Thinking process expand/collapse
 //! - Perfect markdown rendering
 
-use egui::{Color32, RichText, ScrollArea, TextEdit, Ui, Vec2, Frame, Stroke, Rounding, Margin, Layout, Align};
-use chrono::{DateTime, Utc};
 use super::syntax_highlight::{format_code_block, CodeHighlighter};
 use super::tool_calls::{ToolCall, ToolCallManager};
+use chrono::{DateTime, Utc};
+use egui::{
+    Align, Color32, Frame, Layout, Margin, RichText, Rounding, ScrollArea, Stroke, TextEdit, Ui,
+    Vec2,
+};
 
 /// A chat message - matches Claude.ai structure
 #[derive(Debug, Clone)]
@@ -149,7 +152,8 @@ impl ChatPanel {
                         }
                         // 更新展开状态
                         for i in 0..msg_count {
-                            self.messages[i].thinking_expanded = messages_clone[i].thinking_expanded;
+                            self.messages[i].thinking_expanded =
+                                messages_clone[i].thinking_expanded;
                         }
 
                         // Loading indicator
@@ -182,7 +186,7 @@ impl ChatPanel {
                 RichText::new("Claude Code Rust")
                     .size(24.0)
                     .strong()
-                    .color(theme.primary_color())
+                    .color(theme.primary_color()),
             );
 
             ui.add_space(8.0);
@@ -190,17 +194,25 @@ impl ChatPanel {
             ui.label(
                 RichText::new("Your AI coding companion - powered by Rust 🦀")
                     .size(14.0)
-                    .color(theme.muted_text_color())
+                    .color(theme.muted_text_color()),
             );
 
             ui.add_space(24.0);
 
             // Capabilities
             let capabilities = vec![
-                ("💻", "Write & edit code", "Generate and modify code in any language"),
+                (
+                    "💻",
+                    "Write & edit code",
+                    "Generate and modify code in any language",
+                ),
                 ("📁", "Read files", "View and analyze your codebase"),
                 ("🔍", "Search", "Find code patterns across your project"),
-                ("⚡", "Run commands", "Execute bash commands in your terminal"),
+                (
+                    "⚡",
+                    "Run commands",
+                    "Execute bash commands in your terminal",
+                ),
             ];
 
             for (icon, title, desc) in capabilities {
@@ -219,12 +231,12 @@ impl ChatPanel {
                                     RichText::new(title)
                                         .size(14.0)
                                         .strong()
-                                        .color(theme.text_color())
+                                        .color(theme.text_color()),
                                 );
                                 ui.label(
                                     RichText::new(desc)
                                         .size(12.0)
-                                        .color(theme.muted_text_color())
+                                        .color(theme.muted_text_color()),
                                 );
                             });
                         });
@@ -237,7 +249,13 @@ impl ChatPanel {
         });
     }
 
-    fn render_message(&self, ui: &mut Ui, message: &mut ChatMessage, theme: &super::Theme, is_last: bool) {
+    fn render_message(
+        &self,
+        ui: &mut Ui,
+        message: &mut ChatMessage,
+        theme: &super::Theme,
+        is_last: bool,
+    ) {
         let is_user = matches!(message.role, MessageRole::User);
 
         // Full-width message container
@@ -269,16 +287,16 @@ impl ChatPanel {
                                         RichText::new("Claude")
                                             .size(14.0)
                                             .strong()
-                                            .color(theme.primary_color())
+                                            .color(theme.primary_color()),
                                     );
 
                                     // Timestamp
                                     ui.label(
                                         RichText::new(
-                                            message.timestamp.format("%I:%M %p").to_string()
+                                            message.timestamp.format("%I:%M %p").to_string(),
                                         )
                                         .size(11.0)
-                                        .color(theme.muted_text_color())
+                                        .color(theme.muted_text_color()),
                                     );
                                 });
                             } else {
@@ -360,7 +378,7 @@ impl ChatPanel {
                 ui.label(
                     RichText::new(&message.content)
                         .size(15.0)
-                        .color(Color32::WHITE)
+                        .color(Color32::WHITE),
                 );
 
                 // Attachments
@@ -371,7 +389,13 @@ impl ChatPanel {
             });
     }
 
-    fn render_claude_message_content(&self, ui: &mut Ui, message: &mut ChatMessage, theme: &super::Theme, is_last: bool) {
+    fn render_claude_message_content(
+        &self,
+        ui: &mut Ui,
+        message: &mut ChatMessage,
+        theme: &super::Theme,
+        is_last: bool,
+    ) {
         let max_width = 720.0f32.min(ui.available_width());
 
         ui.vertical(|ui| {
@@ -402,14 +426,27 @@ impl ChatPanel {
         });
     }
 
-    fn render_thinking_process(&self, ui: &mut Ui, thinking: &str, expanded: &mut bool, theme: &super::Theme) {
-        let header_text = if *expanded { "▼ Thinking" } else { "▶ Thinking" };
+    fn render_thinking_process(
+        &self,
+        ui: &mut Ui,
+        thinking: &str,
+        expanded: &mut bool,
+        theme: &super::Theme,
+    ) {
+        let header_text = if *expanded {
+            "▼ Thinking"
+        } else {
+            "▶ Thinking"
+        };
 
-        if ui.button(
-            RichText::new(header_text)
-                .size(12.0)
-                .color(theme.muted_text_color())
-        ).clicked() {
+        if ui
+            .button(
+                RichText::new(header_text)
+                    .size(12.0)
+                    .color(theme.muted_text_color()),
+            )
+            .clicked()
+        {
             *expanded = !*expanded;
         }
 
@@ -425,7 +462,7 @@ impl ChatPanel {
                         RichText::new(thinking)
                             .size(12.0)
                             .color(theme.muted_text_color())
-                            .italics()
+                            .italics(),
                     );
                 });
         }
@@ -460,7 +497,7 @@ impl ChatPanel {
                                 RichText::new(header_text)
                                     .size(24.0)
                                     .strong()
-                                    .color(theme.text_color())
+                                    .color(theme.text_color()),
                             );
                             ui.add_space(8.0);
                         } else if let Some(header_text) = trimmed.strip_prefix("## ") {
@@ -469,7 +506,7 @@ impl ChatPanel {
                                 RichText::new(header_text)
                                     .size(20.0)
                                     .strong()
-                                    .color(theme.text_color())
+                                    .color(theme.text_color()),
                             );
                             ui.add_space(6.0);
                         } else if let Some(header_text) = trimmed.strip_prefix("### ") {
@@ -478,7 +515,7 @@ impl ChatPanel {
                                 RichText::new(header_text)
                                     .size(16.0)
                                     .strong()
-                                    .color(theme.text_color())
+                                    .color(theme.text_color()),
                             );
                             ui.add_space(4.0);
                         }
@@ -486,7 +523,9 @@ impl ChatPanel {
                         else if let Some(item) = trimmed.strip_prefix("- ") {
                             in_list = true;
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("•").size(16.0).color(theme.primary_color()));
+                                ui.label(
+                                    RichText::new("•").size(16.0).color(theme.primary_color()),
+                                );
                                 ui.add_space(8.0);
                                 ui.label(RichText::new(item).size(15.0).color(theme.text_color()));
                             });
@@ -501,10 +540,12 @@ impl ChatPanel {
                                         RichText::new(format!("{}.", list_number))
                                             .size(14.0)
                                             .strong()
-                                            .color(theme.primary_color())
+                                            .color(theme.primary_color()),
                                     );
                                     ui.add_space(8.0);
-                                    ui.label(RichText::new(item).size(15.0).color(theme.text_color()));
+                                    ui.label(
+                                        RichText::new(item).size(15.0).color(theme.text_color()),
+                                    );
                                 });
                             }
                         }
@@ -521,7 +562,7 @@ impl ChatPanel {
                                         RichText::new(quote)
                                             .size(14.0)
                                             .color(theme.text_secondary_color())
-                                            .italics()
+                                            .italics(),
                                     );
                                 });
                         }
@@ -550,7 +591,7 @@ impl ChatPanel {
                             ui.monospace(
                                 RichText::new(code)
                                     .size(13.0)
-                                    .color(Color32::from_rgb(212, 165, 116))
+                                    .color(Color32::from_rgb(212, 165, 116)),
                             );
                         });
                 }
@@ -592,7 +633,7 @@ impl ChatPanel {
                         RichText::new(title)
                             .strong()
                             .size(13.0)
-                            .color(theme.text_color())
+                            .color(theme.text_color()),
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -624,12 +665,15 @@ impl ChatPanel {
                         ui.label(
                             RichText::new(&attachment.name)
                                 .size(13.0)
-                                .color(theme.text_color())
+                                .color(theme.text_color()),
                         );
                         ui.label(
-                            RichText::new(format!("{} • {} bytes", attachment.content_type, attachment.size))
-                                .size(11.0)
-                                .color(theme.muted_text_color())
+                            RichText::new(format!(
+                                "{} • {} bytes",
+                                attachment.content_type, attachment.size
+                            ))
+                            .size(11.0)
+                            .color(theme.muted_text_color()),
                         );
                     });
                 });
@@ -645,7 +689,7 @@ impl ChatPanel {
             ui.label(
                 RichText::new("▋")
                     .size(16.0)
-                    .color(Color32::from_rgb(212, 165, 116))
+                    .color(Color32::from_rgb(212, 165, 116)),
             );
         } else {
             ui.label(RichText::new(" ").size(16.0));
@@ -667,18 +711,14 @@ impl ChatPanel {
                         let dot_count = (time * 3.0) as usize % 4;
                         let dots = "●".repeat(dot_count + 1);
 
-                        ui.label(
-                            RichText::new(dots)
-                                .color(theme.primary_color())
-                                .size(12.0)
-                        );
+                        ui.label(RichText::new(dots).color(theme.primary_color()).size(12.0));
 
                         ui.add_space(12.0);
 
                         ui.label(
                             RichText::new("Claude is thinking...")
                                 .color(theme.muted_text_color())
-                                .size(14.0)
+                                .size(14.0),
                         );
                     });
                 });
@@ -726,10 +766,14 @@ impl ChatPanel {
                             egui::Button::new(
                                 RichText::new(if self.is_loading { "⏳" } else { "➤" })
                                     .size(20.0)
-                                    .color(if button_enabled { Color32::WHITE } else { theme.muted_text_color() })
+                                    .color(if button_enabled {
+                                        Color32::WHITE
+                                    } else {
+                                        theme.muted_text_color()
+                                    }),
                             )
                             .fill(button_color)
-                            .rounding(Rounding::same(10.0))
+                            .rounding(Rounding::same(10.0)),
                         );
 
                         // Handle send
@@ -748,7 +792,7 @@ impl ChatPanel {
                     ui.label(
                         RichText::new("Shift + Enter for new line • Enter to send")
                             .color(theme.muted_text_color())
-                            .size(11.0)
+                            .size(11.0),
                     );
                 });
             });
@@ -794,9 +838,9 @@ impl ChatPanel {
 
     pub fn clear_messages(&mut self) {
         self.messages.clear();
-        self.messages.push(
-            ChatMessage::assistant("Hello! I'm Claude. How can I help you today?")
-        );
+        self.messages.push(ChatMessage::assistant(
+            "Hello! I'm Claude. How can I help you today?",
+        ));
     }
 
     pub fn set_loading(&mut self, loading: bool) {
@@ -813,7 +857,10 @@ impl ChatPanel {
 // Content parts for parsing
 enum ContentPart<'a> {
     Text(&'a str),
-    CodeBlock { language: Option<&'a str>, code: &'a str },
+    CodeBlock {
+        language: Option<&'a str>,
+        code: &'a str,
+    },
     InlineCode(&'a str),
 }
 

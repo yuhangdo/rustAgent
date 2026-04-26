@@ -13,7 +13,7 @@ impl VoiceInput {
     pub fn new(state: AppState) -> Self {
         Self { state }
     }
-    
+
     /// Start voice input mode
     pub fn start(&self, push_to_talk: bool) -> anyhow::Result<()> {
         if push_to_talk {
@@ -21,10 +21,10 @@ impl VoiceInput {
         } else {
             println!("Continuous voice input mode enabled. Speak to input.");
         }
-        
+
         // TODO: Implement actual voice recognition
         println!("Voice input is not yet implemented.");
-        
+
         Ok(())
     }
 }

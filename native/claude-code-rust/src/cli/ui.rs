@@ -15,9 +15,17 @@ pub mod colors {
     /// Anthropic purple - primary brand color
     pub const PRIMARY: Color = Color::Magenta;
     /// Warm orange - accent color
-    pub const ACCENT: Color = Color::TrueColor { r: 255, g: 140, b: 66 };
+    pub const ACCENT: Color = Color::TrueColor {
+        r: 255,
+        g: 140,
+        b: 66,
+    };
     /// Soft purple for secondary elements
-    pub const SECONDARY: Color = Color::TrueColor { r: 147, g: 112, b: 219 };
+    pub const SECONDARY: Color = Color::TrueColor {
+        r: 147,
+        g: 112,
+        b: 219,
+    };
     /// Green for success states
     pub const SUCCESS: Color = Color::Green;
     /// Yellow for warnings
@@ -80,11 +88,20 @@ fn print_gradient_banner() {
 /// Print feature highlights
 fn print_features() {
     println!("  {}", "Performance:".truecolor(147, 112, 219).bold());
-    println!("    {} 启动速度提升 {} ", "▸".green(), "2.5x".green().bold());
+    println!(
+        "    {} 启动速度提升 {} ",
+        "▸".green(),
+        "2.5x".green().bold()
+    );
     println!("    {} 内存占用减少 {} ", "▸".green(), "60%".green().bold());
     println!("    {} 响应速度提升 {} ", "▸".green(), "40%".green().bold());
     println!();
-    println!("  {}", "Type 'help' for commands, 'exit' to quit".bright_black().italic());
+    println!(
+        "  {}",
+        "Type 'help' for commands, 'exit' to quit"
+            .bright_black()
+            .italic()
+    );
 }
 
 /// Print a stylish divider
@@ -108,7 +125,10 @@ pub fn print_claude_message(content: &str) {
             // Code block delimiter
             if line.len() > 3 {
                 let lang = &line[3..];
-                println!("  {}", format!("───── {} ─────", lang).truecolor(80, 80, 80));
+                println!(
+                    "  {}",
+                    format!("───── {} ─────", lang).truecolor(80, 80, 80)
+                );
             } else {
                 println!("  {}", "─────────────────────".truecolor(80, 80, 80));
             }
@@ -127,7 +147,11 @@ pub fn print_claude_message(content: &str) {
             println!("  {} {}", "•".truecolor(147, 112, 219), &line[1..].trim());
         } else if line.starts_with(">") {
             // Blockquote
-            println!("  {} {}", "│".truecolor(100, 80, 120), line[1..].trim().bright_black());
+            println!(
+                "  {} {}",
+                "│".truecolor(100, 80, 120),
+                line[1..].trim().bright_black()
+            );
         } else {
             // Regular text with inline formatting
             let formatted = format_inline_styles(line);
@@ -196,7 +220,8 @@ pub fn print_typing_indicator() {
 
     let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     for frame in frames.iter().cycle().take(20) {
-        print!("\r  {} {} {}",
+        print!(
+            "\r  {} {} {}",
             "●".truecolor(147, 112, 219).bold(),
             "Claude is thinking".truecolor(150, 150, 150),
             frame.truecolor(147, 112, 219)
@@ -220,7 +245,10 @@ pub fn print_typewriter(text: &str, delay_ms: u64) {
 /// Print styled help information
 pub fn print_help() {
     println!();
-    println!("  {}", "📖 Available Commands".truecolor(147, 112, 219).bold());
+    println!(
+        "  {}",
+        "📖 Available Commands".truecolor(147, 112, 219).bold()
+    );
     println!();
 
     let commands = [
@@ -234,7 +262,8 @@ pub fn print_help() {
     ];
 
     for (cmd, alias, desc) in commands {
-        println!("  {} {:12} {:12} {}",
+        println!(
+            "  {} {:12} {:12} {}",
             "▸".truecolor(100, 80, 120),
             cmd.bright_cyan(),
             alias.bright_black(),
@@ -258,20 +287,29 @@ pub fn print_status(status: &StatusInfo) {
     print_status_row("API Base", &status.api_base, true);
     print_status_row("Max Tokens", &status.max_tokens, true);
     print_status_row("Timeout", &format!("{}s", status.timeout), true);
-    print_status_row("Streaming", if status.streaming { "On" } else { "Off" }, status.streaming);
+    print_status_row(
+        "Streaming",
+        if status.streaming { "On" } else { "Off" },
+        status.streaming,
+    );
     print_status_row("Messages", &format!("{}", status.message_count), true);
-    print_status_row("API Key", if status.api_key_set { "Set ✓" } else { "Not Set ✗" }, status.api_key_set);
+    print_status_row(
+        "API Key",
+        if status.api_key_set {
+            "Set ✓"
+        } else {
+            "Not Set ✗"
+        },
+        status.api_key_set,
+    );
 
     println!();
 }
 
 fn print_status_row(label: &str, value: &str, positive: bool) {
-    let value_colored = if positive {
-        value.green()
-    } else {
-        value.red()
-    };
-    println!("  {:15} {}",
+    let value_colored = if positive { value.green() } else { value.red() };
+    println!(
+        "  {:15} {}",
         format!("{}:", label).truecolor(120, 120, 120),
         value_colored
     );
@@ -291,10 +329,7 @@ pub struct StatusInfo {
 /// Print an error message with styling
 pub fn print_error(message: &str) {
     println!();
-    println!("  {} {}",
-        "✗".red().bold(),
-        "Error:".red().bold()
-    );
+    println!("  {} {}", "✗".red().bold(), "Error:".red().bold());
     println!("    {}", message.bright_red());
     println!();
 }
@@ -331,7 +366,9 @@ pub fn print_code_block(code: &str, language: Option<&str>) {
 /// Simple syntax highlighting for code
 fn highlight_code_line(line: &str) -> ColoredString {
     // Keywords
-    let keywords = ["fn", "let", "mut", "use", "pub", "struct", "impl", "if", "else", "return", "match"];
+    let keywords = [
+        "fn", "let", "mut", "use", "pub", "struct", "impl", "if", "else", "return", "match",
+    ];
     for kw in &keywords {
         if line.trim().starts_with(kw) || line.contains(&format!(" {} ", kw)) {
             return line.truecolor(180, 140, 250); // Purple tint for keywords
@@ -372,7 +409,12 @@ pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     print!("  ");
     for (i, header) in headers.iter().enumerate() {
         let width = widths.get(i).copied().unwrap_or(10);
-        print!("{}  ", format!("{:width$}", header, width = width).truecolor(147, 112, 219).bold());
+        print!(
+            "{}  ",
+            format!("{:width$}", header, width = width)
+                .truecolor(147, 112, 219)
+                .bold()
+        );
     }
     println!();
 
@@ -388,7 +430,10 @@ pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
         print!("  ");
         for (i, cell) in row.iter().enumerate() {
             let width = widths.get(i).copied().unwrap_or(10);
-            print!("{}  ", format!("{:width$}", cell, width = width).bright_white());
+            print!(
+                "{}  ",
+                format!("{:width$}", cell, width = width).bright_white()
+            );
         }
         println!();
     }

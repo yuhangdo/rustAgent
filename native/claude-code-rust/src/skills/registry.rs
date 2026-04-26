@@ -81,8 +81,8 @@ impl SkillRegistry {
         self.skills
             .values()
             .filter(|skill| {
-                skill.name().to_lowercase().contains(&keyword_lower) ||
-                skill.description().to_lowercase().contains(&keyword_lower)
+                skill.name().to_lowercase().contains(&keyword_lower)
+                    || skill.description().to_lowercase().contains(&keyword_lower)
             })
             .cloned()
             .collect()

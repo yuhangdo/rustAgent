@@ -7,9 +7,11 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::api::{ChatMessage, ToolCall, ToolCallFunction};
+use crate::prompting::PromptSection;
 use crate::query_engine::budget::BudgetState;
 use crate::query_engine::cost::SessionUsageTotals;
 use crate::query_engine::session::QueryRunStatus;
+use crate::token_budget::TokenBudgetState;
 
 const GLOBAL_TURN_KEY: &str = "__global__";
 
@@ -47,6 +49,38 @@ pub enum TranscriptEvent {
     },
     MemorySurfaced {
         paths: Vec<String>,
+    },
+    TokenBudgetWarning {
+        active_tokens: usize,
+        warning_threshold: usize,
+        effective_budget_tokens: usize,
+    },
+    AutoCompactPerformed {
+        strategy: String,
+        before_tokens: usize,
+        after_tokens: usize,
+        compacted_messages: usize,
+        preserved_messages: usize,
+    },
+    AutoCompactFailed {
+        strategy: String,
+        error_summary: String,
+        consecutive_failures: usize,
+    },
+    SessionCompacted {
+        strategy: String,
+        history: Vec<ChatMessage>,
+        system_sections: Vec<PromptSection>,
+        user_context_sections: Vec<PromptSection>,
+        before_tokens: usize,
+        after_tokens: usize,
+        compacted_messages: usize,
+        preserved_messages: usize,
+    },
+    TokenBudgetBlocked {
+        active_tokens: usize,
+        blocking_threshold: usize,
+        effective_budget_tokens: usize,
     },
     UsageRecorded {
         model: String,
@@ -155,6 +189,9 @@ pub struct TranscriptReplay {
     pub messages: Vec<ChatMessage>,
     pub usage_totals: SessionUsageTotals,
     pub budget_state: BudgetState,
+    pub token_budget_state: Option<TokenBudgetState>,
+    pub additional_system_sections: Vec<PromptSection>,
+    pub additional_user_context_sections: Vec<PromptSection>,
     pub last_run_status: QueryRunStatus,
     pub last_error: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
@@ -171,6 +208,9 @@ impl Default for TranscriptReplay {
             messages: Vec::new(),
             usage_totals: SessionUsageTotals::default(),
             budget_state: BudgetState::default(),
+            token_budget_state: None,
+            additional_system_sections: Vec::new(),
+            additional_user_context_sections: Vec::new(),
             last_run_status: QueryRunStatus::Idle,
             last_error: None,
             created_at: None,
@@ -355,6 +395,83 @@ impl TranscriptStore {
                     pending_run = true;
                 }
                 TranscriptEvent::MemorySurfaced { .. } => {}
+                TranscriptEvent::TokenBudgetWarning {
+                    active_tokens,
+                    effective_budget_tokens,
+                    ..
+                } => {
+                    let mut state = replay
+                        .token_budget_state
+                        .clone()
+                        .unwrap_or_else(|| TokenBudgetState::new(*effective_budget_tokens, 0));
+                    state.warning_emitted = true;
+                    state.blocked = false;
+                    state.latest_exact_count = Some(*active_tokens);
+                    state.latest_rough_count = *active_tokens;
+                    state.effective_budget_tokens = *effective_budget_tokens;
+                    state.context_window_tokens = *effective_budget_tokens;
+                    replay.token_budget_state = Some(state);
+                }
+                TranscriptEvent::AutoCompactPerformed { after_tokens, .. } => {
+                    let mut state = replay
+                        .token_budget_state
+                        .clone()
+                        .unwrap_or_else(|| TokenBudgetState::new(*after_tokens, 0));
+                    state.latest_exact_count = Some(*after_tokens);
+                    state.latest_rough_count = *after_tokens;
+                    state.blocked = false;
+                    state.consecutive_autocompact_failures = 0;
+                    replay.token_budget_state = Some(state);
+                }
+                TranscriptEvent::AutoCompactFailed {
+                    consecutive_failures,
+                    ..
+                } => {
+                    let mut state = replay
+                        .token_budget_state
+                        .clone()
+                        .unwrap_or_else(|| TokenBudgetState::new(0, 0));
+                    state.consecutive_autocompact_failures = *consecutive_failures;
+                    replay.token_budget_state = Some(state);
+                }
+                TranscriptEvent::SessionCompacted {
+                    history,
+                    system_sections,
+                    user_context_sections,
+                    after_tokens,
+                    ..
+                } => {
+                    replay.messages = history.clone();
+                    replay.additional_system_sections = system_sections.clone();
+                    replay.additional_user_context_sections = user_context_sections.clone();
+                    let mut state = replay
+                        .token_budget_state
+                        .clone()
+                        .unwrap_or_else(|| TokenBudgetState::new(*after_tokens, 0));
+                    state.blocked = false;
+                    state.warning_emitted = false;
+                    state.latest_exact_count = Some(*after_tokens);
+                    state.latest_rough_count = *after_tokens;
+                    state.consecutive_autocompact_failures = 0;
+                    replay.token_budget_state = Some(state);
+                }
+                TranscriptEvent::TokenBudgetBlocked {
+                    active_tokens,
+                    effective_budget_tokens,
+                    ..
+                } => {
+                    let mut state = replay
+                        .token_budget_state
+                        .clone()
+                        .unwrap_or_else(|| TokenBudgetState::new(*effective_budget_tokens, 0));
+                    state.blocked = true;
+                    state.warning_emitted = true;
+                    state.latest_exact_count = Some(*active_tokens);
+                    state.latest_rough_count = *active_tokens;
+                    state.effective_budget_tokens = *effective_budget_tokens;
+                    state.context_window_tokens = *effective_budget_tokens;
+                    replay.token_budget_state = Some(state);
+                }
                 TranscriptEvent::UsageRecorded {
                     model,
                     prompt_tokens,
@@ -417,6 +534,10 @@ impl TranscriptStore {
 #[cfg(test)]
 mod tests {
     use super::{TranscriptEvent, TranscriptStore};
+    use crate::api::ChatMessage;
+    use crate::prompting::{
+        PromptCacheScope, PromptSection, PromptSectionRole, PromptSectionSource,
+    };
 
     #[tokio::test]
     async fn transcript_replay_rebuilds_messages_and_model_switches() {
@@ -482,6 +603,83 @@ mod tests {
                 "plans/release.md".to_string(),
                 "runbooks/deploy.md".to_string(),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn transcript_replay_restores_token_budget_warning_and_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TranscriptStore::new(temp.path().to_path_buf());
+
+        store
+            .append(&TranscriptEvent::TokenBudgetWarning {
+                active_tokens: 181_000,
+                warning_threshold: 172_000,
+                effective_budget_tokens: 192_000,
+            })
+            .await
+            .unwrap();
+        store
+            .append(&TranscriptEvent::AutoCompactFailed {
+                strategy: "full".to_string(),
+                error_summary: "summary request failed".to_string(),
+                consecutive_failures: 2,
+            })
+            .await
+            .unwrap();
+
+        let replay = store.replay().await.unwrap();
+        let token_budget_state = replay.token_budget_state.expect("token budget state");
+
+        assert!(token_budget_state.warning_emitted);
+        assert_eq!(token_budget_state.active_count(), 181_000);
+        assert_eq!(token_budget_state.consecutive_autocompact_failures, 2);
+    }
+
+    #[tokio::test]
+    async fn transcript_replay_restores_session_compaction_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = TranscriptStore::new(temp.path().to_path_buf());
+
+        store
+            .append(&TranscriptEvent::SessionCompacted {
+                strategy: "full".to_string(),
+                history: vec![ChatMessage::assistant("compacted answer")],
+                system_sections: vec![PromptSection {
+                    id: "compact_boundary".to_string(),
+                    role: PromptSectionRole::System,
+                    content: "boundary".to_string(),
+                    cache_scope: PromptCacheScope::None,
+                    is_dynamic: true,
+                    source: PromptSectionSource::CompactBoundary,
+                }],
+                user_context_sections: vec![PromptSection {
+                    id: "compact_summary".to_string(),
+                    role: PromptSectionRole::User,
+                    content: "summary".to_string(),
+                    cache_scope: PromptCacheScope::None,
+                    is_dynamic: true,
+                    source: PromptSectionSource::CompactSummary,
+                }],
+                before_tokens: 9_000,
+                after_tokens: 2_500,
+                compacted_messages: 12,
+                preserved_messages: 3,
+            })
+            .await
+            .unwrap();
+
+        let replay = store.replay().await.unwrap();
+
+        assert_eq!(replay.messages.len(), 1);
+        assert_eq!(replay.additional_system_sections.len(), 1);
+        assert_eq!(replay.additional_user_context_sections.len(), 1);
+        assert_eq!(
+            replay
+                .token_budget_state
+                .expect("token budget state")
+                .active_count(),
+            2_500
         );
     }
 }

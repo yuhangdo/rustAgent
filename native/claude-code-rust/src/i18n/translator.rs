@@ -1,6 +1,6 @@
 //! Translator - Message translation engine
 
-use super::{Language, Locale, locales};
+use super::{locales, Language, Locale};
 
 /// Translator for internationalization
 pub struct Translator {
@@ -12,9 +12,7 @@ pub struct Translator {
 impl Translator {
     /// Create a new translator with the specified language
     pub fn new(lang_code: &str) -> anyhow::Result<Self> {
-        let language = lang_code
-            .parse::<Language>()
-            .map_err(anyhow::Error::msg)?;
+        let language = lang_code.parse::<Language>().map_err(anyhow::Error::msg)?;
         let current_locale = locales::load_locale(language)?;
         let fallback_locale = locales::load_locale(Language::English)?;
 
@@ -37,9 +35,7 @@ impl Translator {
 
     /// Change the current language
     pub fn set_language(&mut self, lang_code: &str) -> anyhow::Result<()> {
-        let language = lang_code
-            .parse::<Language>()
-            .map_err(anyhow::Error::msg)?;
+        let language = lang_code.parse::<Language>().map_err(anyhow::Error::msg)?;
         self.current_locale = locales::load_locale(language)?;
         self.current_language = language;
         Ok(())
@@ -53,7 +49,9 @@ impl Translator {
     /// Translate a message key with arguments
     pub fn translate_with_args(&self, key: &str, args: &[(&str, &str)]) -> String {
         // Try current locale first
-        let message = self.current_locale.get(key)
+        let message = self
+            .current_locale
+            .get(key)
             .or_else(|| self.fallback_locale.get(key))
             .cloned()
             .unwrap_or_else(|| key.to_string());
@@ -69,7 +67,8 @@ impl Translator {
 
     /// Translate a message and return a default if not found
     pub fn translate_or(&self, key: &str, default: &str) -> String {
-        self.current_locale.get(key)
+        self.current_locale
+            .get(key)
             .or_else(|| self.fallback_locale.get(key))
             .cloned()
             .unwrap_or_else(|| default.to_string())
@@ -77,8 +76,7 @@ impl Translator {
 
     /// Check if a key exists in the current locale
     pub fn has_key(&self, key: &str) -> bool {
-        self.current_locale.get(key).is_some() || 
-        self.fallback_locale.get(key).is_some()
+        self.current_locale.get(key).is_some() || self.fallback_locale.get(key).is_some()
     }
 
     /// Get all available keys
@@ -92,7 +90,11 @@ impl Translator {
     pub fn format_number(&self, num: impl Into<f64>) -> String {
         let num = num.into();
         match self.current_language {
-            Language::German | Language::French | Language::Russian | Language::Portuguese | Language::Italian => {
+            Language::German
+            | Language::French
+            | Language::Russian
+            | Language::Portuguese
+            | Language::Italian => {
                 // Use comma as decimal separator
                 format!("{:.2}", num).replace('.', ",")
             }
@@ -137,7 +139,11 @@ impl Translator {
                 // No plural forms
                 PluralForm::Other
             }
-            Language::English | Language::German | Language::Spanish | Language::Italian | Language::Portuguese => {
+            Language::English
+            | Language::German
+            | Language::Spanish
+            | Language::Italian
+            | Language::Portuguese => {
                 if count == 1 {
                     PluralForm::One
                 } else {
@@ -155,7 +161,7 @@ impl Translator {
                 // Russian has more complex plural rules
                 let rem100 = count % 100;
                 let rem10 = count % 10;
-                
+
                 if rem10 == 1 && rem100 != 11 {
                     PluralForm::One
                 } else if (2..=4).contains(&rem10) && !(12..=14).contains(&rem100) {
@@ -173,7 +179,7 @@ impl Translator {
             PluralForm::One => key_one,
             _ => key_other,
         };
-        
+
         self.translate_with_args(key, &[("count", &count.to_string())])
     }
 }

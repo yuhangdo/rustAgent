@@ -9,7 +9,7 @@
 //! - search: Search notes by content or tags
 //! - get: Get note details and content
 
-use super::{Tool, ToolOutput, ToolError};
+use super::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -58,19 +58,18 @@ impl NoteEditTool {
     }
 
     async fn create_note(&self, input: &serde_json::Value) -> Result<Note, ToolError> {
-        let title = input["title"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "title is required".to_string(),
-                code: Some("missing_title".to_string()),
-            })?;
+        let title = input["title"].as_str().ok_or_else(|| ToolError {
+            message: "title is required".to_string(),
+            code: Some("missing_title".to_string()),
+        })?;
 
-        let content = input["content"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "content is required".to_string(),
-                code: Some("missing_content".to_string()),
-            })?;
+        let content = input["content"].as_str().ok_or_else(|| ToolError {
+            message: "content is required".to_string(),
+            code: Some("missing_content".to_string()),
+        })?;
 
-        let format = input["format"].as_str()
+        let format = input["format"]
+            .as_str()
             .unwrap_or("markdown")
             .parse::<NoteFormat>()
             .map_err(|_| ToolError {
@@ -80,16 +79,16 @@ impl NoteEditTool {
 
         let tags: Vec<String> = input["tags"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let metadata: HashMap<String, serde_json::Value> = input["metadata"]
             .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            })
+            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
 
         let now = chrono::Utc::now();
@@ -107,13 +106,16 @@ impl NoteEditTool {
         Ok(note)
     }
 
-    async fn update_note(&self, note_id: &str, input: &serde_json::Value) -> Result<Note, ToolError> {
+    async fn update_note(
+        &self,
+        note_id: &str,
+        input: &serde_json::Value,
+    ) -> Result<Note, ToolError> {
         let mut notes = self.notes.write().await;
-        let note = notes.get_mut(note_id)
-            .ok_or_else(|| ToolError {
-                message: format!("Note not found: {}", note_id),
-                code: Some("note_not_found".to_string()),
-            })?;
+        let note = notes.get_mut(note_id).ok_or_else(|| ToolError {
+            message: format!("Note not found: {}", note_id),
+            code: Some("note_not_found".to_string()),
+        })?;
 
         if let Some(title) = input["title"].as_str() {
             note.title = title.to_string();
@@ -124,15 +126,15 @@ impl NoteEditTool {
         }
 
         if let Some(format_str) = input["format"].as_str() {
-            note.format = format_str.parse::<NoteFormat>()
-                .map_err(|_| ToolError {
-                    message: "Invalid format. Must be markdown, plaintext, or richtext".to_string(),
-                    code: Some("invalid_format".to_string()),
-                })?;
+            note.format = format_str.parse::<NoteFormat>().map_err(|_| ToolError {
+                message: "Invalid format. Must be markdown, plaintext, or richtext".to_string(),
+                code: Some("invalid_format".to_string()),
+            })?;
         }
 
         if let Some(tags_array) = input["tags"].as_array() {
-            note.tags = tags_array.iter()
+            note.tags = tags_array
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
         }
@@ -152,11 +154,12 @@ impl NoteEditTool {
         let notes = self.notes.read().await;
 
         let query_lower = query.to_lowercase();
-        let results: Vec<Note> = notes.values()
+        let results: Vec<Note> = notes
+            .values()
             .filter(|note| {
                 // Search in title and content
-                let matches_content = note.title.to_lowercase().contains(&query_lower) ||
-                                     note.content.to_lowercase().contains(&query_lower);
+                let matches_content = note.title.to_lowercase().contains(&query_lower)
+                    || note.content.to_lowercase().contains(&query_lower);
 
                 // Filter by tags if provided
                 let matches_tags = if tags.is_empty() {
@@ -238,11 +241,10 @@ impl Tool for NoteEditTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let operation = input["operation"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "operation is required".to_string(),
-                code: Some("missing_parameter".to_string()),
-            })?;
+        let operation = input["operation"].as_str().ok_or_else(|| ToolError {
+            message: "operation is required".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
 
         match operation {
             "create" => self.handle_create(input).await,
@@ -273,17 +275,17 @@ impl NoteEditTool {
                 "success": true,
                 "message": "Note created successfully",
                 "note_id": note_id
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_edit(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let note_id = input["note_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "note_id is required for edit".to_string(),
-                code: Some("missing_note_id".to_string()),
-            })?;
+        let note_id = input["note_id"].as_str().ok_or_else(|| ToolError {
+            message: "note_id is required for edit".to_string(),
+            code: Some("missing_note_id".to_string()),
+        })?;
 
         let note = self.update_note(note_id, &input).await?;
 
@@ -293,17 +295,17 @@ impl NoteEditTool {
                 "success": true,
                 "message": "Note updated successfully",
                 "note": note
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_delete(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let note_id = input["note_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "note_id is required for delete".to_string(),
-                code: Some("missing_note_id".to_string()),
-            })?;
+        let note_id = input["note_id"].as_str().ok_or_else(|| ToolError {
+            message: "note_id is required for delete".to_string(),
+            code: Some("missing_note_id".to_string()),
+        })?;
 
         let mut notes = self.notes.write().await;
         let removed = notes.remove(note_id);
@@ -314,7 +316,8 @@ impl NoteEditTool {
                 content: serde_json::json!({
                     "success": true,
                     "message": "Note deleted successfully"
-                }).to_string(),
+                })
+                .to_string(),
                 metadata: std::collections::HashMap::new(),
             })
         } else {
@@ -335,7 +338,8 @@ impl NoteEditTool {
                 "success": true,
                 "notes": note_list,
                 "count": note_list.len()
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
@@ -344,7 +348,11 @@ impl NoteEditTool {
         let query = input["search_query"].as_str().unwrap_or("");
         let tags: Vec<String> = input["search_tags"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let results = self.search_notes(query, &tags).await?;
@@ -355,31 +363,31 @@ impl NoteEditTool {
                 "success": true,
                 "results": results,
                 "count": results.len()
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_get(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let note_id = input["note_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "note_id is required for get".to_string(),
-                code: Some("missing_note_id".to_string()),
-            })?;
+        let note_id = input["note_id"].as_str().ok_or_else(|| ToolError {
+            message: "note_id is required for get".to_string(),
+            code: Some("missing_note_id".to_string()),
+        })?;
 
         let notes = self.notes.read().await;
-        let note = notes.get(note_id)
-            .ok_or_else(|| ToolError {
-                message: format!("Note not found: {}", note_id),
-                code: Some("note_not_found".to_string()),
-            })?;
+        let note = notes.get(note_id).ok_or_else(|| ToolError {
+            message: format!("Note not found: {}", note_id),
+            code: Some("note_not_found".to_string()),
+        })?;
 
         Ok(ToolOutput {
             output_type: "json".to_string(),
             content: serde_json::json!({
                 "success": true,
                 "note": note
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }

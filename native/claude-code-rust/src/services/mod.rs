@@ -8,25 +8,27 @@
 //! - PluginMarketplace: Plugin management
 //! - Agents: Built-in agent system
 
+use crate::state::AppState;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::state::AppState;
 
-pub mod auto_dream;
-pub mod voice;
-pub mod magic_docs;
-pub mod team_memory_sync;
-pub mod plugin_marketplace;
 pub mod agents;
+pub mod auto_dream;
+pub mod magic_docs;
+pub mod plugin_marketplace;
 pub mod stress_tests;
+pub mod team_memory_sync;
+pub mod voice;
 
-pub use auto_dream::{AutoDreamService, AutoDreamConfig, AutoDreamStatus};
-pub use voice::{VoiceService, VoiceConfig, VoiceBackend, VoiceStatus, RecordingState};
-pub use magic_docs::{MagicDocsService, MagicDocsConfig, MagicDocInfo, MagicDocHeader};
-pub use team_memory_sync::{TeamMemorySyncService, TeamMemoryConfig, TeamMemorySyncStatus, TeamMemory, ConflictResolution};
-pub use plugin_marketplace::{PluginMarketplaceService, PluginConfig, Plugin, MarketplacePlugin};
-pub use agents::{AgentsService, AgentDefinition, AgentType, AgentSession, AgentStatus};
-pub use stress_tests::{StressTestRunner, StressTestResult, run_stress_test};
+pub use agents::{AgentDefinition, AgentSession, AgentStatus, AgentType, AgentsService};
+pub use auto_dream::{AutoDreamConfig, AutoDreamService, AutoDreamStatus};
+pub use magic_docs::{MagicDocHeader, MagicDocInfo, MagicDocsConfig, MagicDocsService};
+pub use plugin_marketplace::{MarketplacePlugin, Plugin, PluginConfig, PluginMarketplaceService};
+pub use stress_tests::{run_stress_test, StressTestResult, StressTestRunner};
+pub use team_memory_sync::{
+    ConflictResolution, TeamMemory, TeamMemoryConfig, TeamMemorySyncService, TeamMemorySyncStatus,
+};
+pub use voice::{RecordingState, VoiceBackend, VoiceConfig, VoiceService, VoiceStatus};
 
 /// Background service manager
 pub struct ServiceManager {
@@ -60,8 +62,14 @@ impl ServiceManager {
         self.auto_dream = Some(Arc::new(AutoDreamService::new(self.state.clone(), None)));
         self.voice = Some(Arc::new(VoiceService::new(self.state.clone(), None)));
         self.magic_docs = Some(Arc::new(MagicDocsService::new(self.state.clone(), None)));
-        self.team_memory_sync = Some(Arc::new(TeamMemorySyncService::new(self.state.clone(), None)));
-        self.plugin_marketplace = Some(Arc::new(PluginMarketplaceService::new(self.state.clone(), None)));
+        self.team_memory_sync = Some(Arc::new(TeamMemorySyncService::new(
+            self.state.clone(),
+            None,
+        )));
+        self.plugin_marketplace = Some(Arc::new(PluginMarketplaceService::new(
+            self.state.clone(),
+            None,
+        )));
         self.agents = Some(Arc::new(AgentsService::new(self.state.clone())));
 
         if let Some(magic_docs) = &self.magic_docs {
@@ -71,23 +79,35 @@ impl ServiceManager {
         println!("✅ Services initialized");
         Ok(())
     }
-    
+
     /// Start all background services
     pub async fn start_all(&self) -> anyhow::Result<()> {
         println!("🚀 Starting background services...");
 
         if let Some(auto_dream) = &self.auto_dream {
             let status = auto_dream.get_status().await;
-            println!("   🌙 AutoDream: {} (last: {}h ago)", 
-                     if status.enabled { "enabled" } else { "disabled" },
-                     status.hours_since_last);
+            println!(
+                "   🌙 AutoDream: {} (last: {}h ago)",
+                if status.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                },
+                status.hours_since_last
+            );
         }
 
         if let Some(voice) = &self.voice {
             let status = voice.get_status().await;
-            println!("   🎤 Voice: {} ({:?})", 
-                     if status.available { "available" } else { "unavailable" },
-                     status.backend);
+            println!(
+                "   🎤 Voice: {} ({:?})",
+                if status.available {
+                    "available"
+                } else {
+                    "unavailable"
+                },
+                status.backend
+            );
         }
 
         if let Some(magic_docs) = &self.magic_docs {
@@ -97,8 +117,10 @@ impl ServiceManager {
 
         if let Some(team_sync) = &self.team_memory_sync {
             let status = team_sync.get_status().await;
-            println!("   👥 TeamSync: {} local, {} remote", 
-                     status.local_memories, status.remote_memories);
+            println!(
+                "   👥 TeamSync: {} local, {} remote",
+                status.local_memories, status.remote_memories
+            );
         }
 
         if let Some(plugins) = &self.plugin_marketplace {
@@ -108,14 +130,17 @@ impl ServiceManager {
 
         if let Some(agents) = &self.agents {
             let status = agents.get_status().await;
-            println!("   🤖 Agents: {} available, {} active", 
-                     status.available_agents.len(), status.active_sessions);
+            println!(
+                "   🤖 Agents: {} available, {} active",
+                status.available_agents.len(),
+                status.active_sessions
+            );
         }
-        
+
         println!("✅ All services started");
         Ok(())
     }
-    
+
     /// Stop all background services
     pub async fn stop_all(&self) -> anyhow::Result<()> {
         println!("🛑 Stopping background services...");
@@ -123,7 +148,7 @@ impl ServiceManager {
         if let Some(magic_docs) = &self.magic_docs {
             magic_docs.save_state().await?;
         }
-        
+
         println!("✅ All services stopped");
         Ok(())
     }
@@ -154,12 +179,30 @@ impl ServiceManager {
 
     pub async fn get_status(&self) -> ServiceStatus {
         ServiceStatus {
-            auto_dream: self.auto_dream.as_ref().map(|s| futures::executor::block_on(s.get_status())),
-            voice: self.voice.as_ref().map(|s| futures::executor::block_on(s.get_status())),
-            magic_docs: self.magic_docs.as_ref().map(|s| futures::executor::block_on(s.get_status())),
-            team_sync: self.team_memory_sync.as_ref().map(|s| futures::executor::block_on(s.get_status())),
-            plugins: self.plugin_marketplace.as_ref().map(|s| futures::executor::block_on(s.get_status())),
-            agents: self.agents.as_ref().map(|s| futures::executor::block_on(s.get_status())),
+            auto_dream: self
+                .auto_dream
+                .as_ref()
+                .map(|s| futures::executor::block_on(s.get_status())),
+            voice: self
+                .voice
+                .as_ref()
+                .map(|s| futures::executor::block_on(s.get_status())),
+            magic_docs: self
+                .magic_docs
+                .as_ref()
+                .map(|s| futures::executor::block_on(s.get_status())),
+            team_sync: self
+                .team_memory_sync
+                .as_ref()
+                .map(|s| futures::executor::block_on(s.get_status())),
+            plugins: self
+                .plugin_marketplace
+                .as_ref()
+                .map(|s| futures::executor::block_on(s.get_status())),
+            agents: self
+                .agents
+                .as_ref()
+                .map(|s| futures::executor::block_on(s.get_status())),
         }
     }
 }

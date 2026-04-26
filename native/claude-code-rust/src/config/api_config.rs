@@ -22,7 +22,8 @@ pub struct ApiConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            api_key: std::env::var("ANTHROPIC_API_KEY").ok()
+            api_key: std::env::var("ANTHROPIC_API_KEY")
+                .ok()
                 .or(std::env::var("DASHSCOPE_API_KEY").ok())
                 .or(std::env::var("DEEPSEEK_API_KEY").ok()),
             base_url: std::env::var("API_BASE_URL")
@@ -38,7 +39,8 @@ impl Default for ApiConfig {
 impl ApiConfig {
     /// Get the API key, checking environment variable first
     pub fn get_api_key(&self) -> Option<String> {
-        std::env::var("ANTHROPIC_API_KEY").ok()
+        std::env::var("ANTHROPIC_API_KEY")
+            .ok()
             .or(std::env::var("DASHSCOPE_API_KEY").ok())
             .or(std::env::var("DEEPSEEK_API_KEY").ok())
             .or(self.api_key.clone())
@@ -46,8 +48,7 @@ impl ApiConfig {
 
     /// Get the base URL, checking environment variable first
     pub fn get_base_url(&self) -> String {
-        std::env::var("API_BASE_URL")
-            .unwrap_or_else(|_| self.base_url.clone())
+        std::env::var("API_BASE_URL").unwrap_or_else(|_| self.base_url.clone())
     }
 
     /// Get the model ID for the given model name

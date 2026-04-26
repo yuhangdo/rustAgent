@@ -1,6 +1,6 @@
 //! File Write Tool
 
-use super::{Tool, ToolOutput, ToolError};
+use super::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
 use std::path::Path;
@@ -24,11 +24,11 @@ impl Tool for FileWriteTool {
     fn name(&self) -> &str {
         "file_write"
     }
-    
+
     fn description(&self) -> &str {
         "Write content to a new file or overwrite an existing file"
     }
-    
+
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -45,37 +45,33 @@ impl Tool for FileWriteTool {
             "required": ["file_path", "content"]
         })
     }
-    
+
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let file_path = input["file_path"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "file_path is required".to_string(),
-                code: Some("missing_parameter".to_string()),
-            })?;
-        
-        let content = input["content"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "content is required".to_string(),
-                code: Some("missing_parameter".to_string()),
-            })?;
-        
+        let file_path = input["file_path"].as_str().ok_or_else(|| ToolError {
+            message: "file_path is required".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
+
+        let content = input["content"].as_str().ok_or_else(|| ToolError {
+            message: "content is required".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
+
         let path = Path::new(file_path);
-        
+
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| ToolError {
-                    message: format!("Failed to create directory: {}", e),
-                    code: Some("directory_error".to_string()),
-                })?;
-        }
-        
-        std::fs::write(path, content)
-            .map_err(|e| ToolError {
-                message: format!("Failed to write file: {}", e),
-                code: Some("write_error".to_string()),
+            std::fs::create_dir_all(parent).map_err(|e| ToolError {
+                message: format!("Failed to create directory: {}", e),
+                code: Some("directory_error".to_string()),
             })?;
-        
+        }
+
+        std::fs::write(path, content).map_err(|e| ToolError {
+            message: format!("Failed to write file: {}", e),
+            code: Some("write_error".to_string()),
+        })?;
+
         Ok(ToolOutput {
             output_type: "text".to_string(),
             content: format!("Successfully wrote {}", file_path),

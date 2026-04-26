@@ -7,7 +7,7 @@
 //! - File diff viewer
 //! - Tool result display
 
-use egui::{Color32, RichText, Ui, Frame, Rounding, Margin, Stroke, Layout, Align};
+use egui::{Align, Color32, Frame, Layout, Margin, RichText, Rounding, Stroke, Ui};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A tool call instance
@@ -68,9 +68,7 @@ pub struct ToolCallManager {
 
 impl Default for ToolCallManager {
     fn default() -> Self {
-        Self {
-            calls: Vec::new(),
-        }
+        Self { calls: Vec::new() }
     }
 }
 
@@ -102,27 +100,48 @@ impl ToolCallManager {
 
     fn render_tool_call_card(&self, ui: &mut Ui, call: &mut ToolCall, theme: &super::Theme) {
         let (icon, title, bg_color, border_color) = match call.name.as_str() {
-            "read_file" | "file_read" | "view" => {
-                ("📖", "View", theme.surface_color(), Color32::from_rgb(100, 181, 246))
-            }
-            "write_file" | "file_write" | "edit" => {
-                ("📝", "Edit", theme.surface_color(), Color32::from_rgb(76, 175, 80))
-            }
-            "create_file" | "create" => {
-                ("✨", "Create", theme.surface_color(), Color32::from_rgb(156, 39, 176))
-            }
-            "bash" | "execute" | "execute_bash" => {
-                ("⚡", "Bash", theme.surface_color(), Color32::from_rgb(255, 152, 0))
-            }
-            "search" | "grep" | "search_files" => {
-                ("🔍", "Search", theme.surface_color(), Color32::from_rgb(33, 150, 243))
-            }
-            "list_directory" | "ls" | "list" => {
-                ("📁", "List", theme.surface_color(), Color32::from_rgb(121, 85, 72))
-            }
-            _ => {
-                ("🔧", call.name.as_str(), theme.surface_color(), theme.border_color())
-            }
+            "read_file" | "file_read" | "view" => (
+                "📖",
+                "View",
+                theme.surface_color(),
+                Color32::from_rgb(100, 181, 246),
+            ),
+            "write_file" | "file_write" | "edit" => (
+                "📝",
+                "Edit",
+                theme.surface_color(),
+                Color32::from_rgb(76, 175, 80),
+            ),
+            "create_file" | "create" => (
+                "✨",
+                "Create",
+                theme.surface_color(),
+                Color32::from_rgb(156, 39, 176),
+            ),
+            "bash" | "execute" | "execute_bash" => (
+                "⚡",
+                "Bash",
+                theme.surface_color(),
+                Color32::from_rgb(255, 152, 0),
+            ),
+            "search" | "grep" | "search_files" => (
+                "🔍",
+                "Search",
+                theme.surface_color(),
+                Color32::from_rgb(33, 150, 243),
+            ),
+            "list_directory" | "ls" | "list" => (
+                "📁",
+                "List",
+                theme.surface_color(),
+                Color32::from_rgb(121, 85, 72),
+            ),
+            _ => (
+                "🔧",
+                call.name.as_str(),
+                theme.surface_color(),
+                theme.border_color(),
+            ),
         };
 
         // Status indicator
@@ -160,18 +179,14 @@ impl ToolCallManager {
                         RichText::new(title)
                             .strong()
                             .color(theme.text_color())
-                            .size(14.0)
+                            .size(14.0),
                     );
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.add_space(12.0);
 
                         // Status indicator
-                        ui.label(
-                            RichText::new(status_icon)
-                                .color(status_color)
-                                .size(16.0)
-                        );
+                        ui.label(RichText::new(status_icon).color(status_color).size(16.0));
 
                         ui.add_space(8.0);
 
@@ -196,7 +211,7 @@ impl ToolCallManager {
                         ui.monospace(
                             RichText::new(&call.arguments)
                                 .color(theme.muted_text_color())
-                                .size(12.0)
+                                .size(12.0),
                         );
                     }
 
@@ -210,7 +225,7 @@ impl ToolCallManager {
                             RichText::new("Result:")
                                 .strong()
                                 .color(theme.text_color())
-                                .size(12.0)
+                                .size(12.0),
                         );
 
                         ui.add_space(4.0);
@@ -237,9 +252,7 @@ impl ToolCallManager {
                                 };
 
                                 ui.monospace(
-                                    RichText::new(display_result)
-                                        .color(result_color)
-                                        .size(11.0)
+                                    RichText::new(display_result).color(result_color).size(11.0),
                                 );
                             });
                     }
@@ -249,46 +262,72 @@ impl ToolCallManager {
             });
     }
 
-    fn render_tool_arguments(&self, ui: &mut Ui, tool_name: &str, args: &serde_json::Value, theme: &super::Theme) {
+    fn render_tool_arguments(
+        &self,
+        ui: &mut Ui,
+        tool_name: &str,
+        args: &serde_json::Value,
+        theme: &super::Theme,
+    ) {
         match tool_name {
             "read_file" | "file_read" | "view" => {
                 if let Some(path) = args["path"].as_str() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Path:").color(theme.muted_text_color()).size(12.0));
-                        ui.monospace(
-                            RichText::new(path)
-                                .color(theme.primary_color())
-                                .size(12.0)
+                        ui.label(
+                            RichText::new("Path:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
                         );
+                        ui.monospace(RichText::new(path).color(theme.primary_color()).size(12.0));
                     });
                 }
                 if let Some(offset) = args["offset"].as_i64() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Offset:").color(theme.muted_text_color()).size(12.0));
-                        ui.label(RichText::new(offset.to_string()).color(theme.text_color()).size(12.0));
+                        ui.label(
+                            RichText::new("Offset:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
+                        );
+                        ui.label(
+                            RichText::new(offset.to_string())
+                                .color(theme.text_color())
+                                .size(12.0),
+                        );
                     });
                 }
                 if let Some(limit) = args["limit"].as_i64() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Limit:").color(theme.muted_text_color()).size(12.0));
-                        ui.label(RichText::new(limit.to_string()).color(theme.text_color()).size(12.0));
+                        ui.label(
+                            RichText::new("Limit:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
+                        );
+                        ui.label(
+                            RichText::new(limit.to_string())
+                                .color(theme.text_color())
+                                .size(12.0),
+                        );
                     });
                 }
             }
             "write_file" | "file_write" | "edit" | "create_file" | "create" => {
                 if let Some(path) = args["path"].as_str() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Path:").color(theme.muted_text_color()).size(12.0));
-                        ui.monospace(
-                            RichText::new(path)
-                                .color(theme.primary_color())
-                                .size(12.0)
+                        ui.label(
+                            RichText::new("Path:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
                         );
+                        ui.monospace(RichText::new(path).color(theme.primary_color()).size(12.0));
                     });
                 }
                 if let Some(content) = args["content"].as_str() {
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Content:").color(theme.muted_text_color()).size(12.0));
+                    ui.label(
+                        RichText::new("Content:")
+                            .color(theme.muted_text_color())
+                            .size(12.0),
+                    );
 
                     Frame::none()
                         .fill(Color32::from_rgb(25, 25, 25))
@@ -304,14 +343,18 @@ impl ToolCallManager {
                             ui.monospace(
                                 RichText::new(preview)
                                     .color(theme.code_text_color())
-                                    .size(11.0)
+                                    .size(11.0),
                             );
                         });
                 }
             }
             "bash" | "execute" | "execute_bash" => {
                 if let Some(command) = args["command"].as_str() {
-                    ui.label(RichText::new("Command:").color(theme.muted_text_color()).size(12.0));
+                    ui.label(
+                        RichText::new("Command:")
+                            .color(theme.muted_text_color())
+                            .size(12.0),
+                    );
 
                     Frame::none()
                         .fill(Color32::from_rgb(30, 20, 10))
@@ -321,54 +364,70 @@ impl ToolCallManager {
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("$").color(Color32::from_rgb(212, 165, 116)).size(12.0));
+                                ui.label(
+                                    RichText::new("$")
+                                        .color(Color32::from_rgb(212, 165, 116))
+                                        .size(12.0),
+                                );
                                 ui.add_space(4.0);
                                 ui.monospace(
                                     RichText::new(command)
                                         .color(Color32::from_rgb(230, 230, 230))
-                                        .size(12.0)
+                                        .size(12.0),
                                 );
                             });
                         });
                 }
                 if let Some(timeout) = args["timeout"].as_i64() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Timeout:").color(theme.muted_text_color()).size(12.0));
-                        ui.label(RichText::new(format!("{}s", timeout)).color(theme.text_color()).size(12.0));
+                        ui.label(
+                            RichText::new("Timeout:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
+                        );
+                        ui.label(
+                            RichText::new(format!("{}s", timeout))
+                                .color(theme.text_color())
+                                .size(12.0),
+                        );
                     });
                 }
             }
             "search" | "grep" | "search_files" => {
                 if let Some(query) = args["query"].as_str() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Query:").color(theme.muted_text_color()).size(12.0));
+                        ui.label(
+                            RichText::new("Query:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
+                        );
                         ui.monospace(
                             RichText::new(format!("'{}'", query))
                                 .color(Color32::from_rgb(255, 193, 7))
-                                .size(12.0)
+                                .size(12.0),
                         );
                     });
                 }
                 if let Some(path) = args["path"].as_str() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("In:").color(theme.muted_text_color()).size(12.0));
-                        ui.monospace(
-                            RichText::new(path)
-                                .color(theme.primary_color())
-                                .size(12.0)
+                        ui.label(
+                            RichText::new("In:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
                         );
+                        ui.monospace(RichText::new(path).color(theme.primary_color()).size(12.0));
                     });
                 }
             }
             "list_directory" | "ls" | "list" => {
                 if let Some(path) = args["path"].as_str() {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Directory:").color(theme.muted_text_color()).size(12.0));
-                        ui.monospace(
-                            RichText::new(path)
-                                .color(theme.primary_color())
-                                .size(12.0)
+                        ui.label(
+                            RichText::new("Directory:")
+                                .color(theme.muted_text_color())
+                                .size(12.0),
                         );
+                        ui.monospace(RichText::new(path).color(theme.primary_color()).size(12.0));
                     });
                 }
             }
@@ -377,11 +436,15 @@ impl ToolCallManager {
                 if let Some(obj) = args.as_object() {
                     for (key, value) in obj {
                         ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{}:", key)).color(theme.muted_text_color()).size(12.0));
+                            ui.label(
+                                RichText::new(format!("{}:", key))
+                                    .color(theme.muted_text_color())
+                                    .size(12.0),
+                            );
                             ui.monospace(
                                 RichText::new(format!("{}", value))
                                     .color(theme.text_color())
-                                    .size(12.0)
+                                    .size(12.0),
                             );
                         });
                     }
@@ -410,16 +473,12 @@ impl ToolCallManager {
                     };
 
                     ui.horizontal(|ui| {
-                        ui.monospace(
-                            RichText::new(prefix)
-                                .color(color)
-                                .size(11.0)
-                        );
+                        ui.monospace(RichText::new(prefix).color(color).size(11.0));
                         ui.add_space(4.0);
                         ui.monospace(
                             RichText::new(change.value().trim_end())
                                 .color(color)
-                                .size(11.0)
+                                .size(11.0),
                         );
                     });
                 }
@@ -433,16 +492,14 @@ pub fn demo_tool_calls() -> Vec<ToolCall> {
         ToolCall::new(
             "read_file",
             r#"{"path": "src/main.rs", "offset": 1, "limit": 50}"#,
-        ).with_result("use std::io;\n\nfn main() {\n    println!(\"Hello, World!\");\n}"),
-
-        ToolCall::new(
-            "search",
-            r#"{"query": "fn main", "path": "src"}"#,
-        ).with_result("src/main.rs:3: fn main() {\nsrc/lib.rs:10: pub fn main() -> Result<()>"),
-
+        )
+        .with_result("use std::io;\n\nfn main() {\n    println!(\"Hello, World!\");\n}"),
+        ToolCall::new("search", r#"{"query": "fn main", "path": "src"}"#)
+            .with_result("src/main.rs:3: fn main() {\nsrc/lib.rs:10: pub fn main() -> Result<()>"),
         ToolCall::new(
             "bash",
             r#"{"command": "cargo build --release", "timeout": 120}"#,
-        ).with_result("Compiling...\nFinished release [optimized] target(s) in 12.34s"),
+        )
+        .with_result("Compiling...\nFinished release [optimized] target(s) in 12.34s"),
     ]
 }

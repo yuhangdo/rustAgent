@@ -45,6 +45,8 @@ fn request(
         memory_enabled: true,
         auto_memory_directory: None,
         already_surfaced_memory_paths: Vec::new(),
+        additional_system_sections: Vec::new(),
+        additional_user_context_sections: Vec::new(),
     }
 }
 
@@ -520,6 +522,60 @@ async fn prompt_builder_filters_already_surfaced_and_recent_tool_reference_noise
         assembly.surfaced_memory_paths,
         vec!["feedback_search_warning.md".to_string()]
     );
+}
+
+#[test]
+fn prompt_builder_renders_additional_compaction_sections() {
+    let temp_dir = tempdir().expect("temp dir");
+    let workspace_root = temp_dir.path().join("project");
+
+    std::fs::create_dir_all(&workspace_root).expect("workspace");
+
+    let mut request = request(
+        &workspace_root,
+        &workspace_root,
+        vec![ChatMessage::user("latest question")],
+    );
+    request
+        .additional_system_sections
+        .push(claude_code_rs::prompting::PromptSection {
+            id: "compact_boundary".to_string(),
+            role: claude_code_rs::prompting::PromptSectionRole::System,
+            content: "## Compact Boundary\n- Type: auto_full_compact".to_string(),
+            cache_scope: PromptCacheScope::None,
+            is_dynamic: true,
+            source: PromptSectionSource::CompactBoundary,
+        });
+    request
+        .additional_user_context_sections
+        .push(claude_code_rs::prompting::PromptSection {
+            id: "compact_summary".to_string(),
+            role: claude_code_rs::prompting::PromptSectionRole::User,
+            content: "### Compacted Conversation\nEarlier requests...".to_string(),
+            cache_scope: PromptCacheScope::None,
+            is_dynamic: true,
+            source: PromptSectionSource::CompactSummary,
+        });
+
+    let assembly = PromptBuilder::build(request).expect("prompt assembly");
+    let rendered = assembly.render();
+    let combined = rendered
+        .messages
+        .iter()
+        .filter_map(|message| message.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(assembly
+        .system_sections
+        .iter()
+        .any(|section| matches!(section.source, PromptSectionSource::CompactBoundary)));
+    assert!(assembly
+        .user_context_sections
+        .iter()
+        .any(|section| matches!(section.source, PromptSectionSource::CompactSummary)));
+    assert!(combined.contains("Compact Boundary"));
+    assert!(combined.contains("Compacted Conversation"));
 }
 
 #[test]

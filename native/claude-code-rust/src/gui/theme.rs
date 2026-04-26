@@ -2,7 +2,7 @@
 //!
 //! Based on Claude.ai design system with warm orange/brown accent colors
 
-use egui::{Color32, FontFamily, FontId, TextStyle, Visuals, Stroke, Rounding};
+use egui::{Color32, FontFamily, FontId, Rounding, Stroke, TextStyle, Visuals};
 
 /// Application theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,22 +22,22 @@ pub mod colors {
     pub const CLAUDE_ORANGE_LIGHT: Color32 = Color32::from_rgb(235, 195, 150);
 
     // Background colors
-    pub const BG_DARKEST: Color32 = Color32::from_rgb(13, 13, 13);      // #0D0D0D
-    pub const BG_DARKER: Color32 = Color32::from_rgb(18, 18, 18);      // #121212
-    pub const BG_DARK: Color32 = Color32::from_rgb(26, 26, 26);        // #1A1A1A
-    pub const BG_SURFACE: Color32 = Color32::from_rgb(35, 35, 35);     // #232323
-    pub const BG_ELEVATED: Color32 = Color32::from_rgb(45, 45, 45);    // #2D2D2D
+    pub const BG_DARKEST: Color32 = Color32::from_rgb(13, 13, 13); // #0D0D0D
+    pub const BG_DARKER: Color32 = Color32::from_rgb(18, 18, 18); // #121212
+    pub const BG_DARK: Color32 = Color32::from_rgb(26, 26, 26); // #1A1A1A
+    pub const BG_SURFACE: Color32 = Color32::from_rgb(35, 35, 35); // #232323
+    pub const BG_ELEVATED: Color32 = Color32::from_rgb(45, 45, 45); // #2D2D2D
 
     // Border colors
-    pub const BORDER_DARK: Color32 = Color32::from_rgb(42, 42, 42);    // #2A2A2A
-    pub const BORDER: Color32 = Color32::from_rgb(55, 55, 55);         // #373737
-    pub const BORDER_LIGHT: Color32 = Color32::from_rgb(70, 70, 70);   // #464646
+    pub const BORDER_DARK: Color32 = Color32::from_rgb(42, 42, 42); // #2A2A2A
+    pub const BORDER: Color32 = Color32::from_rgb(55, 55, 55); // #373737
+    pub const BORDER_LIGHT: Color32 = Color32::from_rgb(70, 70, 70); // #464646
 
     // Text colors
-    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(232, 232, 232);   // #E8E8E8
+    pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(232, 232, 232); // #E8E8E8
     pub const TEXT_SECONDARY: Color32 = Color32::from_rgb(180, 180, 180); // #B4B4B4
-    pub const TEXT_MUTED: Color32 = Color32::from_rgb(120, 120, 120);     // #787878
-    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(80, 80, 80);     // #505050
+    pub const TEXT_MUTED: Color32 = Color32::from_rgb(120, 120, 120); // #787878
+    pub const TEXT_DISABLED: Color32 = Color32::from_rgb(80, 80, 80); // #505050
 
     // Semantic colors
     pub const SUCCESS: Color32 = Color32::from_rgb(76, 175, 80);
@@ -279,13 +279,31 @@ impl Theme {
         let mut style = (*ctx.style()).clone();
 
         style.text_styles = [
-            (TextStyle::Heading, FontId::new(24.0, FontFamily::Proportional)),
-            (TextStyle::Name("heading2".into()), FontId::new(20.0, FontFamily::Proportional)),
-            (TextStyle::Name("heading3".into()), FontId::new(16.0, FontFamily::Proportional)),
+            (
+                TextStyle::Heading,
+                FontId::new(24.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Name("heading2".into()),
+                FontId::new(20.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Name("heading3".into()),
+                FontId::new(16.0, FontFamily::Proportional),
+            ),
             (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
-            (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
-            (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
+            (
+                TextStyle::Monospace,
+                FontId::new(13.0, FontFamily::Monospace),
+            ),
+            (
+                TextStyle::Button,
+                FontId::new(14.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Small,
+                FontId::new(12.0, FontFamily::Proportional),
+            ),
         ]
         .into();
 

@@ -1,6 +1,6 @@
 //! Locales Module - Locale data loading
 
-use super::{Language, Locale, loader::LocaleLoader};
+use super::{loader::LocaleLoader, Language, Locale};
 
 /// Load locale data for a language
 pub fn load_locale(language: Language) -> anyhow::Result<Locale> {
@@ -9,9 +9,7 @@ pub fn load_locale(language: Language) -> anyhow::Result<Locale> {
 
 /// Get all available locale codes
 pub fn available_locales() -> Vec<&'static str> {
-    vec![
-        "en", "zh", "ja", "es", "fr", "de", "ru", "pt", "it", "ko"
-    ]
+    vec!["en", "zh", "ja", "es", "fr", "de", "ru", "pt", "it", "ko"]
 }
 
 /// Check if a locale is available

@@ -358,7 +358,6 @@ pub enum TeamSyncCommands {
     },
 }
 
-
 #[derive(Subcommand, Debug)]
 pub enum SkillsCommands {
     /// List all available skills

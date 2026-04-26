@@ -4,13 +4,12 @@ use std::time::UNIX_EPOCH;
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::api::{ChatMessage, ToolDefinition};
-
-const DEFAULT_CONTEXT_WINDOW_TOKENS: usize = 32_000;
+use crate::token_budget::DEFAULT_CONTEXT_WINDOW_TOKENS;
 const DEFAULT_RECENT_MESSAGE_COUNT: usize = 8;
 const MAX_PROJECT_CONTEXT_DOC_CHARS: usize = 4_000;
 const MAX_PROJECT_MEMORY_INDEX_BYTES: usize = 25_000;
@@ -24,20 +23,20 @@ const MAX_COMPACTED_TEXT_MESSAGE_CHARS: usize = 960;
 pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str =
     "<!-- rust-agent:system-prompt:dynamic-boundary -->";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSectionRole {
     System,
     User,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptCacheScope {
     None,
     Global,
     Org,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PromptSectionSource {
     AttributionHeader,
     BaseInstructions,
@@ -53,9 +52,12 @@ pub enum PromptSectionSource {
     WorkspaceMemory,
     DirectoryMemory,
     SessionMemory,
+    CompactBoundary,
+    CompactSummary,
+    PostCompactReinjection,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptSection {
     pub id: String,
     pub role: PromptSectionRole,
@@ -207,6 +209,8 @@ pub struct PromptBuildRequest {
     pub memory_enabled: bool,
     pub auto_memory_directory: Option<PathBuf>,
     pub already_surfaced_memory_paths: Vec<String>,
+    pub additional_system_sections: Vec<PromptSection>,
+    pub additional_user_context_sections: Vec<PromptSection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -915,6 +919,7 @@ fn build_prompt_assembly(
             &request.workspace_root,
             &current_working_dir,
             &trim_report,
+            &request.additional_system_sections,
         );
         let user_context_sections = build_user_context_sections(
             &project_memory_sections,
@@ -922,6 +927,7 @@ fn build_prompt_assembly(
             &trim_report,
             trimmed_history.len(),
             memory_policy,
+            &request.additional_user_context_sections,
         );
         let history_budget = available_history_tokens(
             budget,
@@ -956,6 +962,7 @@ fn build_prompt_assembly(
         &request.workspace_root,
         &current_working_dir,
         &trim_report,
+        &request.additional_system_sections,
     );
     let user_context_sections = build_user_context_sections(
         &project_memory_sections,
@@ -963,6 +970,7 @@ fn build_prompt_assembly(
         &trim_report,
         trimmed_history.len(),
         memory_policy,
+        &request.additional_user_context_sections,
     );
 
     Ok(PromptAssembly {
@@ -1124,6 +1132,7 @@ fn build_system_sections(
     workspace_root: &Path,
     current_working_dir: &Path,
     trim_report: &PromptTrimReport,
+    additional_sections: &[PromptSection],
 ) -> Vec<PromptSection> {
     let mut sections = static_sections.to_vec();
     sections.push(PromptSection {
@@ -1155,6 +1164,8 @@ fn build_system_sections(
         });
     }
 
+    sections.extend(additional_sections.iter().cloned());
+
     sections
 }
 
@@ -1183,9 +1194,10 @@ fn build_user_context_sections(
     trim_report: &PromptTrimReport,
     preserved_message_count: usize,
     memory_policy: MemoryPolicy,
+    additional_sections: &[PromptSection],
 ) -> Vec<PromptSection> {
     if memory_policy == MemoryPolicy::Ignore {
-        return Vec::new();
+        return additional_sections.to_vec();
     }
 
     let mut sections = project_memory_sections.to_vec();
@@ -1194,6 +1206,7 @@ fn build_user_context_sections(
     {
         sections.push(section);
     }
+    sections.extend(additional_sections.iter().cloned());
     sections
 }
 

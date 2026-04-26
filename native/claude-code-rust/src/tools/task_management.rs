@@ -8,7 +8,7 @@
 //! - complete: Mark a task as completed
 //! - get: Get task details
 
-use super::{Tool, ToolOutput, ToolError};
+use super::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -67,19 +67,18 @@ impl TaskManagementTool {
     }
 
     async fn create_task(&self, input: &serde_json::Value) -> Result<Task, ToolError> {
-        let subject = input["subject"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "subject is required".to_string(),
-                code: Some("missing_subject".to_string()),
-            })?;
+        let subject = input["subject"].as_str().ok_or_else(|| ToolError {
+            message: "subject is required".to_string(),
+            code: Some("missing_subject".to_string()),
+        })?;
 
-        let description = input["description"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "description is required".to_string(),
-                code: Some("missing_description".to_string()),
-            })?;
+        let description = input["description"].as_str().ok_or_else(|| ToolError {
+            message: "description is required".to_string(),
+            code: Some("missing_description".to_string()),
+        })?;
 
-        let priority = input["priority"].as_str()
+        let priority = input["priority"]
+            .as_str()
             .unwrap_or("medium")
             .parse::<TaskPriority>()
             .map_err(|_| ToolError {
@@ -89,16 +88,16 @@ impl TaskManagementTool {
 
         let tags: Vec<String> = input["tags"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let metadata: HashMap<String, serde_json::Value> = input["metadata"]
             .as_object()
-            .map(|obj| {
-                obj.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            })
+            .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default();
 
         let now = chrono::Utc::now();
@@ -117,13 +116,16 @@ impl TaskManagementTool {
         Ok(task)
     }
 
-    async fn update_task(&self, task_id: &str, input: &serde_json::Value) -> Result<Task, ToolError> {
+    async fn update_task(
+        &self,
+        task_id: &str,
+        input: &serde_json::Value,
+    ) -> Result<Task, ToolError> {
         let mut tasks = self.tasks.write().await;
-        let task = tasks.get_mut(task_id)
-            .ok_or_else(|| ToolError {
-                message: format!("Task not found: {}", task_id),
-                code: Some("task_not_found".to_string()),
-            })?;
+        let task = tasks.get_mut(task_id).ok_or_else(|| ToolError {
+            message: format!("Task not found: {}", task_id),
+            code: Some("task_not_found".to_string()),
+        })?;
 
         if let Some(subject) = input["subject"].as_str() {
             task.subject = subject.to_string();
@@ -134,15 +136,16 @@ impl TaskManagementTool {
         }
 
         if let Some(status_str) = input["status"].as_str() {
-            task.status = status_str.parse::<TaskStatus>()
-                .map_err(|_| ToolError {
-                    message: "Invalid status. Must be pending, in_progress, completed, or deleted".to_string(),
-                    code: Some("invalid_status".to_string()),
-                })?;
+            task.status = status_str.parse::<TaskStatus>().map_err(|_| ToolError {
+                message: "Invalid status. Must be pending, in_progress, completed, or deleted"
+                    .to_string(),
+                code: Some("invalid_status".to_string()),
+            })?;
         }
 
         if let Some(priority_str) = input["priority"].as_str() {
-            task.priority = priority_str.parse::<TaskPriority>()
+            task.priority = priority_str
+                .parse::<TaskPriority>()
                 .map_err(|_| ToolError {
                     message: "Invalid priority. Must be low, medium, high, or critical".to_string(),
                     code: Some("invalid_priority".to_string()),
@@ -150,7 +153,8 @@ impl TaskManagementTool {
         }
 
         if let Some(tags_array) = input["tags"].as_array() {
-            task.tags = tags_array.iter()
+            task.tags = tags_array
+                .iter()
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect();
         }
@@ -246,11 +250,10 @@ impl Tool for TaskManagementTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let operation = input["operation"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "operation is required".to_string(),
-                code: Some("missing_parameter".to_string()),
-            })?;
+        let operation = input["operation"].as_str().ok_or_else(|| ToolError {
+            message: "operation is required".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
 
         match operation {
             "create" => self.handle_create(input).await,
@@ -281,17 +284,17 @@ impl TaskManagementTool {
                 "success": true,
                 "message": "Task created successfully",
                 "task_id": task_id
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_update(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let task_id = input["task_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "task_id is required for update".to_string(),
-                code: Some("missing_task_id".to_string()),
-            })?;
+        let task_id = input["task_id"].as_str().ok_or_else(|| ToolError {
+            message: "task_id is required for update".to_string(),
+            code: Some("missing_task_id".to_string()),
+        })?;
 
         let task = self.update_task(task_id, &input).await?;
 
@@ -301,17 +304,17 @@ impl TaskManagementTool {
                 "success": true,
                 "message": "Task updated successfully",
                 "task": task
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_delete(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let task_id = input["task_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "task_id is required for delete".to_string(),
-                code: Some("missing_task_id".to_string()),
-            })?;
+        let task_id = input["task_id"].as_str().ok_or_else(|| ToolError {
+            message: "task_id is required for delete".to_string(),
+            code: Some("missing_task_id".to_string()),
+        })?;
 
         let mut tasks = self.tasks.write().await;
         let removed = tasks.remove(task_id);
@@ -322,7 +325,8 @@ impl TaskManagementTool {
                 content: serde_json::json!({
                     "success": true,
                     "message": "Task deleted successfully"
-                }).to_string(),
+                })
+                .to_string(),
                 metadata: std::collections::HashMap::new(),
             })
         } else {
@@ -337,7 +341,8 @@ impl TaskManagementTool {
         let tasks = self.tasks.read().await;
         let filter = &input["filter"];
 
-        let filtered_tasks: Vec<&Task> = tasks.values()
+        let filtered_tasks: Vec<&Task> = tasks
+            .values()
             .filter(|task| {
                 if let Some(status_filter) = filter["status"].as_str() {
                     let task_status = match task.status {
@@ -364,7 +369,8 @@ impl TaskManagementTool {
                 }
 
                 if let Some(tags_filter) = filter["tags"].as_array() {
-                    let filter_tags: Vec<String> = tags_filter.iter()
+                    let filter_tags: Vec<String> = tags_filter
+                        .iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect();
                     if !filter_tags.iter().all(|tag| task.tags.contains(tag)) {
@@ -382,24 +388,23 @@ impl TaskManagementTool {
                 "success": true,
                 "tasks": filtered_tasks,
                 "count": filtered_tasks.len()
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_complete(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let task_id = input["task_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "task_id is required for complete".to_string(),
-                code: Some("missing_task_id".to_string()),
-            })?;
+        let task_id = input["task_id"].as_str().ok_or_else(|| ToolError {
+            message: "task_id is required for complete".to_string(),
+            code: Some("missing_task_id".to_string()),
+        })?;
 
         let mut tasks = self.tasks.write().await;
-        let task = tasks.get_mut(task_id)
-            .ok_or_else(|| ToolError {
-                message: format!("Task not found: {}", task_id),
-                code: Some("task_not_found".to_string()),
-            })?;
+        let task = tasks.get_mut(task_id).ok_or_else(|| ToolError {
+            message: format!("Task not found: {}", task_id),
+            code: Some("task_not_found".to_string()),
+        })?;
 
         task.status = TaskStatus::Completed;
         task.updated_at = chrono::Utc::now();
@@ -410,31 +415,31 @@ impl TaskManagementTool {
                 "success": true,
                 "message": "Task marked as completed",
                 "task": task
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }
 
     async fn handle_get(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let task_id = input["task_id"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "task_id is required for get".to_string(),
-                code: Some("missing_task_id".to_string()),
-            })?;
+        let task_id = input["task_id"].as_str().ok_or_else(|| ToolError {
+            message: "task_id is required for get".to_string(),
+            code: Some("missing_task_id".to_string()),
+        })?;
 
         let tasks = self.tasks.read().await;
-        let task = tasks.get(task_id)
-            .ok_or_else(|| ToolError {
-                message: format!("Task not found: {}", task_id),
-                code: Some("task_not_found".to_string()),
-            })?;
+        let task = tasks.get(task_id).ok_or_else(|| ToolError {
+            message: format!("Task not found: {}", task_id),
+            code: Some("task_not_found".to_string()),
+        })?;
 
         Ok(ToolOutput {
             output_type: "json".to_string(),
             content: serde_json::json!({
                 "success": true,
                 "task": task
-            }).to_string(),
+            })
+            .to_string(),
             metadata: std::collections::HashMap::new(),
         })
     }

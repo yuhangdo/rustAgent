@@ -28,12 +28,12 @@ impl Storage {
             cache: Arc::new(RwLock::new(Vec::new())),
         }
     }
-    
+
     pub fn with_backend(mut self, backend: StorageBackend) -> Self {
         self.backend = backend;
         self
     }
-    
+
     pub async fn save_memory(&self, entry: &MemoryEntry) -> anyhow::Result<()> {
         match self.backend {
             StorageBackend::File => {
@@ -49,10 +49,10 @@ impl Storage {
                 cache.push(entry.clone());
             }
         }
-        
+
         Ok(())
     }
-    
+
     pub async fn load_memory(&self, id: &str) -> anyhow::Result<Option<MemoryEntry>> {
         match self.backend {
             StorageBackend::File => {
@@ -60,7 +60,7 @@ impl Storage {
                 if !file_path.exists() {
                     return Ok(None);
                 }
-                
+
                 let content = tokio::fs::read_to_string(&file_path).await?;
                 let entry: MemoryEntry = serde_json::from_str(&content)?;
                 Ok(Some(entry))
@@ -74,7 +74,7 @@ impl Storage {
             }
         }
     }
-    
+
     pub async fn delete_memory(&self, id: &str) -> anyhow::Result<()> {
         match self.backend {
             StorageBackend::File => {
@@ -91,20 +91,20 @@ impl Storage {
                 cache.retain(|e| e.id != id);
             }
         }
-        
+
         Ok(())
     }
-    
+
     pub async fn load_all(&self) -> anyhow::Result<Vec<MemoryEntry>> {
         match self.backend {
             StorageBackend::File => {
                 if !self.path.exists() {
                     return Ok(Vec::new());
                 }
-                
+
                 let mut entries = Vec::new();
                 let mut dir = tokio::fs::read_dir(&self.path).await?;
-                
+
                 while let Some(entry) = dir.next_entry().await? {
                     let path = entry.path();
                     if path.extension().map(|e| e == "json").unwrap_or(false) {
@@ -115,7 +115,7 @@ impl Storage {
                         }
                     }
                 }
-                
+
                 Ok(entries)
             }
             StorageBackend::Sqlite => {
@@ -127,17 +127,17 @@ impl Storage {
             }
         }
     }
-    
+
     pub async fn save_all(&self, entries: &[MemoryEntry]) -> anyhow::Result<()> {
         tokio::fs::create_dir_all(&self.path).await?;
-        
+
         for entry in entries {
             self.save_memory(entry).await?;
         }
-        
+
         Ok(())
     }
-    
+
     pub async fn clear(&self) -> anyhow::Result<()> {
         match self.backend {
             StorageBackend::File => {
@@ -154,25 +154,25 @@ impl Storage {
                 cache.clear();
             }
         }
-        
+
         Ok(())
     }
-    
+
     pub async fn size(&self) -> anyhow::Result<u64> {
         match self.backend {
             StorageBackend::File => {
                 if !self.path.exists() {
                     return Ok(0);
                 }
-                
+
                 let mut total_size = 0u64;
                 let mut dir = tokio::fs::read_dir(&self.path).await?;
-                
+
                 while let Some(entry) = dir.next_entry().await? {
                     let metadata = entry.metadata().await?;
                     total_size += metadata.len();
                 }
-                
+
                 Ok(total_size)
             }
             StorageBackend::Sqlite => {
@@ -184,23 +184,28 @@ impl Storage {
             }
         }
     }
-    
+
     pub async fn count(&self) -> anyhow::Result<usize> {
         match self.backend {
             StorageBackend::File => {
                 if !self.path.exists() {
                     return Ok(0);
                 }
-                
+
                 let mut count = 0;
                 let mut dir = tokio::fs::read_dir(&self.path).await?;
-                
+
                 while let Some(entry) = dir.next_entry().await? {
-                    if entry.path().extension().map(|e| e == "json").unwrap_or(false) {
+                    if entry
+                        .path()
+                        .extension()
+                        .map(|e| e == "json")
+                        .unwrap_or(false)
+                    {
                         count += 1;
                     }
                 }
-                
+
                 Ok(count)
             }
             StorageBackend::Sqlite => {

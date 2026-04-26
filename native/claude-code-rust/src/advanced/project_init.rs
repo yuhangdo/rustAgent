@@ -49,12 +49,12 @@ impl ProjectTemplate {
             variables: HashMap::new(),
         }
     }
-    
+
     pub fn with_description(mut self, description: &str) -> Self {
         self.description = description.to_string();
         self
     }
-    
+
     pub fn with_file(mut self, path: &str, content: &str) -> Self {
         self.files.push(TemplateFile {
             path: path.to_string(),
@@ -63,12 +63,12 @@ impl ProjectTemplate {
         });
         self
     }
-    
+
     pub fn with_command(mut self, command: &str) -> Self {
         self.commands.push(command.to_string());
         self
     }
-    
+
     pub fn with_variable(mut self, key: &str, default: &str) -> Self {
         self.variables.insert(key.to_string(), default.to_string());
         self
@@ -93,34 +93,44 @@ impl ProjectInitializer {
             config,
             templates: HashMap::new(),
         };
-        
+
         initializer.register_builtin_templates();
         initializer
     }
-    
+
     fn register_builtin_templates(&mut self) {
-        self.templates.insert("rust".to_string(), 
+        self.templates.insert(
+            "rust".to_string(),
             ProjectTemplate::new("rust", "Rust")
                 .with_description("Rust project with Cargo")
-                .with_file("Cargo.toml", r#"[package]
+                .with_file(
+                    "Cargo.toml",
+                    r#"[package]
 name = "{{project_name}}"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-"#)
-                .with_file("src/main.rs", r#"fn main() {
+"#,
+                )
+                .with_file(
+                    "src/main.rs",
+                    r#"fn main() {
     println!("Hello, world!");
 }
-"#)
+"#,
+                )
                 .with_file(".gitignore", "/target\n")
-                .with_command("cargo init")
+                .with_command("cargo init"),
         );
-        
-        self.templates.insert("node".to_string(),
+
+        self.templates.insert(
+            "node".to_string(),
             ProjectTemplate::new("node", "JavaScript/TypeScript")
                 .with_description("Node.js project with npm")
-                .with_file("package.json", r#"{
+                .with_file(
+                    "package.json",
+                    r#"{
   "name": "{{project_name}}",
   "version": "1.0.0",
   "main": "index.js",
@@ -128,73 +138,89 @@ edition = "2021"
     "start": "node index.js"
   }
 }
-"#)
-                .with_file("index.js", r#"console.log('Hello, world!');
-"#)
+"#,
+                )
+                .with_file(
+                    "index.js",
+                    r#"console.log('Hello, world!');
+"#,
+                )
                 .with_file(".gitignore", "node_modules/\n")
-                .with_command("npm init -y")
+                .with_command("npm init -y"),
         );
-        
-        self.templates.insert("python".to_string(),
+
+        self.templates.insert(
+            "python".to_string(),
             ProjectTemplate::new("python", "Python")
                 .with_description("Python project")
-                .with_file("main.py", r#"def main():
+                .with_file(
+                    "main.py",
+                    r#"def main():
     print("Hello, world!")
 
 if __name__ == "__main__":
     main()
-"#)
+"#,
+                )
                 .with_file("requirements.txt", "")
-                .with_file(".gitignore", "__pycache__/\n*.pyc\n.env\n")
+                .with_file(".gitignore", "__pycache__/\n*.pyc\n.env\n"),
         );
-        
-        self.templates.insert("basic".to_string(),
+
+        self.templates.insert(
+            "basic".to_string(),
             ProjectTemplate::new("basic", "Generic")
                 .with_description("Basic project structure")
                 .with_file("README.md", "# {{project_name}}\n\nProject description.\n")
-                .with_file(".gitignore", "")
+                .with_file(".gitignore", ""),
         );
     }
-    
+
     pub fn list_templates(&self) -> Vec<&ProjectTemplate> {
         self.templates.values().collect()
     }
-    
+
     pub fn get_template(&self, name: &str) -> Option<&ProjectTemplate> {
         self.templates.get(name)
     }
-    
-    pub async fn init(&self, path: &PathBuf, name: &str, template_name: Option<&str>) -> anyhow::Result<()> {
+
+    pub async fn init(
+        &self,
+        path: &PathBuf,
+        name: &str,
+        template_name: Option<&str>,
+    ) -> anyhow::Result<()> {
         let template_name = template_name.unwrap_or(&self.config.default_template);
-        let template = self.templates.get(template_name)
+        let template = self
+            .templates
+            .get(template_name)
             .ok_or_else(|| anyhow::anyhow!("Template not found: {}", template_name))?;
-        
+
         let project_path = path.join(name);
         tokio::fs::create_dir_all(&project_path).await?;
-        
+
         println!("📁 Creating project: {} at {:?}", name, project_path);
-        
+
         for file in &template.files {
             let file_path = project_path.join(&file.path);
-            
+
             if let Some(parent) = file_path.parent() {
                 tokio::fs::create_dir_all(parent).await?;
             }
-            
+
             let content = self.render_template(&file.content, name);
             tokio::fs::write(&file_path, content).await?;
-            
+
             println!("  ✓ Created: {}", file.path);
         }
-        
+
         if self.config.enable_git {
             self.init_git(&project_path).await?;
         }
-        
+
         if self.config.enable_vscode {
             self.init_vscode(&project_path, template).await?;
         }
-        
+
         for command in &template.commands {
             println!("  ⚙️ Running: {}", command);
             let _ = tokio::process::Command::new("sh")
@@ -204,62 +230,63 @@ if __name__ == "__main__":
                 .output()
                 .await;
         }
-        
+
         println!("✅ Project initialized: {}", name);
-        
+
         Ok(())
     }
-    
+
     fn render_template(&self, content: &str, project_name: &str) -> String {
         let mut result = content.to_string();
         result = result.replace("{{project_name}}", project_name);
-        
+
         if let Some(ref author) = self.config.author_name {
             result = result.replace("{{author}}", author);
         }
-        
+
         if let Some(ref email) = self.config.author_email {
             result = result.replace("{{email}}", email);
         }
-        
+
         result
     }
-    
+
     async fn init_git(&self, path: &PathBuf) -> anyhow::Result<()> {
         let gitignore_path = path.join(".gitignore");
         if !gitignore_path.exists() {
             tokio::fs::write(&gitignore_path, "").await?;
         }
-        
+
         let output = tokio::process::Command::new("git")
             .arg("init")
             .current_dir(path)
             .output()
             .await?;
-        
+
         if output.status.success() {
             println!("  ✓ Initialized git repository");
         }
-        
+
         Ok(())
     }
-    
+
     async fn init_vscode(&self, path: &PathBuf, template: &ProjectTemplate) -> anyhow::Result<()> {
         let vscode_path = path.join(".vscode");
         tokio::fs::create_dir_all(&vscode_path).await?;
-        
+
         let settings = serde_json::json!({
             "files.exclude": {
                 "**/.git": true,
                 "**/.DS_Store": true
             }
         });
-        
+
         tokio::fs::write(
             vscode_path.join("settings.json"),
-            serde_json::to_string_pretty(&settings)?
-        ).await?;
-        
+            serde_json::to_string_pretty(&settings)?,
+        )
+        .await?;
+
         let launch_config = match template.language.as_str() {
             "Rust" => serde_json::json!({
                 "version": "0.2.0",
@@ -284,30 +311,31 @@ if __name__ == "__main__":
             _ => serde_json::json!({
                 "version": "0.2.0",
                 "configurations": []
-            })
+            }),
         };
-        
+
         tokio::fs::write(
             vscode_path.join("launch.json"),
-            serde_json::to_string_pretty(&launch_config)?
-        ).await?;
-        
+            serde_json::to_string_pretty(&launch_config)?,
+        )
+        .await?;
+
         println!("  ✓ Created VS Code configuration");
-        
+
         Ok(())
     }
-    
+
     pub async fn add_template(&mut self, template: ProjectTemplate) {
         self.templates.insert(template.name.clone(), template);
     }
-    
+
     pub async fn load_templates(&mut self) -> anyhow::Result<()> {
         if !self.config.templates_dir.exists() {
             return Ok(());
         }
-        
+
         let mut dir = tokio::fs::read_dir(&self.config.templates_dir).await?;
-        
+
         while let Some(entry) = dir.next_entry().await? {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false) {
@@ -318,7 +346,7 @@ if __name__ == "__main__":
                 }
             }
         }
-        
+
         Ok(())
     }
 }

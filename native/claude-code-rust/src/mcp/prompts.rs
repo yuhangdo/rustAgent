@@ -24,7 +24,7 @@ impl Prompt {
             server_name: None,
         }
     }
-    
+
     pub fn with_argument(mut self, name: &str, description: &str, required: bool) -> Self {
         self.arguments.push(PromptArgument {
             name: name.to_string(),
@@ -33,12 +33,12 @@ impl Prompt {
         });
         self
     }
-    
+
     pub fn with_server(mut self, server_name: &str) -> Self {
         self.server_name = Some(server_name.to_string());
         self
     }
-    
+
     pub fn render(&self, args: &HashMap<String, String>) -> String {
         let mut result = self.template.clone();
         for (key, value) in args {
@@ -78,41 +78,46 @@ impl PromptManager {
             prompts: Arc::new(RwLock::new(HashMap::new())),
         }
     }
-    
+
     pub async fn register(&self, prompt: Prompt) {
         let mut prompts = self.prompts.write().await;
         prompts.insert(prompt.name.clone(), prompt);
     }
-    
+
     pub async fn unregister(&self, name: &str) {
         let mut prompts = self.prompts.write().await;
         prompts.remove(name);
     }
-    
+
     pub async fn get(&self, name: &str) -> Option<Prompt> {
         let prompts = self.prompts.read().await;
         prompts.get(name).cloned()
     }
-    
+
     pub async fn list(&self) -> Vec<Prompt> {
         let prompts = self.prompts.read().await;
         prompts.values().cloned().collect()
     }
-    
-    pub async fn render(&self, name: &str, args: HashMap<String, String>) -> anyhow::Result<String> {
+
+    pub async fn render(
+        &self,
+        name: &str,
+        args: HashMap<String, String>,
+    ) -> anyhow::Result<String> {
         let prompts = self.prompts.read().await;
-        let prompt = prompts.get(name)
+        let prompt = prompts
+            .get(name)
             .ok_or_else(|| anyhow::anyhow!("Prompt not found: {}", name))?;
-        
+
         for arg in &prompt.arguments {
             if arg.required && !args.contains_key(&arg.name) {
                 return Err(anyhow::anyhow!("Missing required argument: {}", arg.name));
             }
         }
-        
+
         Ok(prompt.render(&args))
     }
-    
+
     pub async fn register_builtin_prompts(&self) {
         self.register(
             Prompt::new(
@@ -123,7 +128,7 @@ impl PromptManager {
             .with_argument("code", "The code to review", true)
             .with_argument("focus", "Specific areas to focus on", false)
         ).await;
-        
+
         self.register(
             Prompt::new(
                 "explain_code",
@@ -133,7 +138,7 @@ impl PromptManager {
             .with_argument("code", "The code to explain", true)
             .with_argument("context", "Additional context", false)
         ).await;
-        
+
         self.register(
             Prompt::new(
                 "generate_tests",
@@ -144,7 +149,7 @@ impl PromptManager {
             .with_argument("framework", "Test framework to use", false)
             .with_argument("coverage", "Coverage goal percentage", false)
         ).await;
-        
+
         self.register(
             Prompt::new(
                 "refactor",
@@ -155,7 +160,7 @@ impl PromptManager {
             .with_argument("goals", "Refactoring goals", false)
             .with_argument("constraints", "Constraints to follow", false)
         ).await;
-        
+
         self.register(
             Prompt::new(
                 "debug",
@@ -167,7 +172,7 @@ impl PromptManager {
             .with_argument("error", "Error message", false)
             .with_argument("expected", "Expected behavior", false)
         ).await;
-        
+
         self.register(
             Prompt::new(
                 "document",

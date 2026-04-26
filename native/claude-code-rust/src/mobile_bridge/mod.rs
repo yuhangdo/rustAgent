@@ -70,6 +70,10 @@ pub enum BridgeEventType {
     ModelSwitched,
     BudgetWarning,
     BudgetExhausted,
+    ContextWarning,
+    ContextCompacted,
+    ContextBlocked,
+    MemorySurfaced,
     ReasoningSummary,
     ToolCallRequested,
     ToolCallCompleted,
@@ -158,7 +162,10 @@ impl MobileBridgeServer {
             .unwrap_or_else(|| request.run_id.clone());
 
         let handle = BridgeRunHandle {
-            state: Arc::new(RwLock::new(BridgeRunState::new(&request.run_id, &session_id))),
+            state: Arc::new(RwLock::new(BridgeRunState::new(
+                &request.run_id,
+                &session_id,
+            ))),
             cancel_requested: Arc::new(AtomicBool::new(false)),
         };
         self.runs.insert(request.run_id.clone(), handle);
@@ -228,7 +235,8 @@ impl MobileBridgeServer {
             .await
         {
             Ok(session_snapshot) => {
-                self.apply_session_snapshot(&run_id, &session_snapshot).await;
+                self.apply_session_snapshot(&run_id, &session_snapshot)
+                    .await;
                 match session_snapshot.last_run_status {
                     crate::query_engine::QueryRunStatus::Cancelled => {
                         self.mark_cancelled(&run_id, "Cancelled from the UI.").await;
@@ -368,14 +376,18 @@ impl MobileBridgeServer {
 
             {
                 let mut guard = handle.state.write().await;
-                if !guard.active_model.is_empty() && guard.active_model != session_snapshot.active_model {
+                if !guard.active_model.is_empty()
+                    && guard.active_model != session_snapshot.active_model
+                {
                     model_switch_details = Some(format!(
                         "Session switched models from {} to {}.",
                         guard.active_model, session_snapshot.active_model
                     ));
                 }
 
-                if !guard.budget_state.warning_emitted && session_snapshot.budget_state.warning_emitted {
+                if !guard.budget_state.warning_emitted
+                    && session_snapshot.budget_state.warning_emitted
+                {
                     budget_warning_details = Some(format_budget_details(
                         "Soft budget warning",
                         session_snapshot.budget_state.total_cost_usd,
@@ -618,7 +630,88 @@ impl AgentEventHandler for BridgeEventSink {
                     )
                     .await;
             }
-            AgentEvent::MemorySurfaced { .. } => {}
+            AgentEvent::MemorySurfaced { paths } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::MemorySurfaced,
+                        "Memory Surfaced",
+                        trim_for_event(&paths.join(", "), 400),
+                    )
+                    .await;
+            }
+            AgentEvent::TokenBudgetWarning {
+                active_tokens,
+                warning_threshold,
+                effective_budget_tokens,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::ContextWarning,
+                        "Context Warning",
+                        format!(
+                            "Active prompt tokens {} crossed warning threshold {} of {}.",
+                            active_tokens, warning_threshold, effective_budget_tokens
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::AutoCompactPerformed {
+                strategy,
+                before_tokens,
+                after_tokens,
+                compacted_messages,
+                ..
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::ContextCompacted,
+                        "Context Compacted",
+                        format!(
+                            "{} compact reduced prompt tokens from {} to {} across {} messages.",
+                            strategy, before_tokens, after_tokens, compacted_messages
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::AutoCompactFailed {
+                strategy,
+                error_summary,
+                ..
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::ContextCompacted,
+                        "Context Compact Failed",
+                        format!(
+                            "{} compact failed: {}",
+                            strategy,
+                            trim_for_event(&error_summary, 280)
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::SessionCompacted { .. } => {}
+            AgentEvent::TokenBudgetBlocked {
+                active_tokens,
+                blocking_threshold,
+                effective_budget_tokens,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::ContextBlocked,
+                        "Context Blocked",
+                        format!(
+                            "Active prompt tokens {} crossed blocking threshold {} of {}.",
+                            active_tokens, blocking_threshold, effective_budget_tokens
+                        ),
+                    )
+                    .await;
+            }
             AgentEvent::AnswerDelta { full_text, .. } => {
                 self.server.update_answer(&self.run_id, full_text).await;
             }

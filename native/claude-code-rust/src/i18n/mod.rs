@@ -3,12 +3,12 @@
 //! This module provides localization support for Claude Code using
 //! Mozilla's Fluent localization system.
 
-pub mod translator;
 pub mod loader;
 pub mod locales;
+pub mod translator;
 
-pub use translator::Translator;
 pub use loader::LocaleLoader;
+pub use translator::Translator;
 
 use std::sync::OnceLock;
 
@@ -17,9 +17,7 @@ static TRANSLATOR: OnceLock<Translator> = OnceLock::new();
 
 /// Initialize the global translator
 pub fn init(lang: &str) -> &'static Translator {
-    TRANSLATOR.get_or_init(|| {
-        Translator::new(lang).expect("Failed to initialize translator")
-    })
+    TRANSLATOR.get_or_init(|| Translator::new(lang).expect("Failed to initialize translator"))
 }
 
 /// Get the global translator instance

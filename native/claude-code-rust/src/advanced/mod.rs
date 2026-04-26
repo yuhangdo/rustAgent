@@ -5,15 +5,15 @@
 //! - Remote execution
 //! - Project initialization
 
-pub mod ssh;
-pub mod remote;
 pub mod project_init;
+pub mod remote;
+pub mod ssh;
 
 use serde::{Deserialize, Serialize};
 
+pub use project_init::{ProjectConfig, ProjectInitializer, ProjectTemplate};
+pub use remote::{RemoteConfig, RemoteExecutor, RemoteResult};
 pub use ssh::{SshClient, SshConfig, SshSession};
-pub use remote::{RemoteExecutor, RemoteConfig, RemoteResult};
-pub use project_init::{ProjectInitializer, ProjectConfig, ProjectTemplate};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvancedConfig {

@@ -8,9 +8,7 @@ use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 
-use super::{
-    handlers::*,
-};
+use super::handlers::*;
 
 /// Create the application router
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -25,7 +23,6 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/", get(index))
         .route("/search", get(search_page))
         .route("/plugin/:id", get(plugin_detail))
-        
         // API Routes
         .route("/api/health", get(health_check))
         .route("/api/stats", get(get_stats))
@@ -36,10 +33,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/plugins/:id/install", post(install_plugin))
         .route("/api/categories", get(get_categories))
         .route("/api/tags", get(get_tags))
-        
         // Static files
         .nest_service("/static", ServeDir::new("static"))
-        
         // Add middleware
         .layer(cors)
         .with_state(state)

@@ -13,8 +13,12 @@ impl BrowserStorage {
     /// Create a new browser storage instance
     pub fn new() -> Self {
         let window = web_sys::window();
-        let local_storage = window.as_ref().and_then(|w| w.local_storage().ok().flatten());
-        let session_storage = window.as_ref().and_then(|w| w.session_storage().ok().flatten());
+        let local_storage = window
+            .as_ref()
+            .and_then(|w| w.local_storage().ok().flatten());
+        let session_storage = window
+            .as_ref()
+            .and_then(|w| w.session_storage().ok().flatten());
 
         Self {
             local_storage,
@@ -101,7 +105,7 @@ impl BrowserStorage {
             Some(storage) => {
                 let length = storage.length()?;
                 let mut total_size = 0usize;
-                
+
                 for i in 0..length {
                     if let Some(key) = storage.key(i)? {
                         if let Some(value) = storage.get_item(&key)? {
@@ -151,12 +155,13 @@ impl IndexedDbStorage {
     /// Open the database and create object store if needed
     pub async fn open(&self) -> Result<idb::Database, JsValue> {
         let mut open_request = idb::OpenRequest::new(&self.db_name, 1)?;
-        
+
         open_request.on_upgrade_needed(|event| {
             let db = event.database()?;
             if !db.object_store_names().any(|n| n == self.store_name) {
-                db.create_object_store(&self.store_name)
-                    .map_err(|e| JsValue::from_str(&format!("Failed to create object store: {:?}", e)))?;
+                db.create_object_store(&self.store_name).map_err(|e| {
+                    JsValue::from_str(&format!("Failed to create object store: {:?}", e))
+                })?;
             }
             Ok(())
         });
@@ -169,25 +174,29 @@ impl IndexedDbStorage {
         let db = self.open().await?;
         let tx = db.transaction(&[&self.store_name], idb::TransactionMode::ReadWrite)?;
         let store = tx.object_store(&self.store_name)?;
-        
+
         let json = serde_json::to_string(value)
             .map_err(|e| JsValue::from_str(&format!("Serialization error: {}", e)))?;
-        
+
         store.put(&json.into(), Some(&key.into()))?;
         tx.commit().await?;
-        
+
         Ok(())
     }
 
     /// Retrieve a value
-    pub async fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>, JsValue> {
+    pub async fn get<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &str,
+    ) -> Result<Option<T>, JsValue> {
         let db = self.open().await?;
         let tx = db.transaction(&[&self.store_name], idb::TransactionMode::ReadOnly)?;
         let store = tx.object_store(&self.store_name)?;
-        
+
         match store.get(&key.into())?.await? {
             Some(value) => {
-                let json_str = value.as_string()
+                let json_str = value
+                    .as_string()
                     .ok_or_else(|| JsValue::from_str("Invalid value type"))?;
                 let value: T = serde_json::from_str(&json_str)
                     .map_err(|e| JsValue::from_str(&format!("Deserialization error: {}", e)))?;
@@ -202,10 +211,10 @@ impl IndexedDbStorage {
         let db = self.open().await?;
         let tx = db.transaction(&[&self.store_name], idb::TransactionMode::ReadWrite)?;
         let store = tx.object_store(&self.store_name)?;
-        
+
         store.delete(&key.into())?;
         tx.commit().await?;
-        
+
         Ok(())
     }
 
@@ -214,10 +223,10 @@ impl IndexedDbStorage {
         let db = self.open().await?;
         let tx = db.transaction(&[&self.store_name], idb::TransactionMode::ReadWrite)?;
         let store = tx.object_store(&self.store_name)?;
-        
+
         store.clear()?;
         tx.commit().await?;
-        
+
         Ok(())
     }
 }
@@ -236,7 +245,9 @@ mod idb {
             let window = web_sys::window().ok_or("No window")?;
             let idb = window.indexed_db()?.ok_or("IndexedDB not available")?;
             let request = idb.open_with_u32(name, version)?;
-            Ok(Self { inner: request.into() })
+            Ok(Self {
+                inner: request.into(),
+            })
         }
 
         pub fn on_upgrade_needed<F>(&mut self, callback: F)
@@ -252,7 +263,10 @@ mod idb {
     impl std::future::Future for OpenRequest {
         type Output = Result<Database, JsValue>;
 
-        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
             // Simplified - real implementation would use proper async
             std::task::Poll::Pending
         }
@@ -278,7 +292,11 @@ mod idb {
             Ok(ObjectStore)
         }
 
-        pub fn transaction(&self, _stores: &[&str], _mode: TransactionMode) -> Result<Transaction, JsValue> {
+        pub fn transaction(
+            &self,
+            _stores: &[&str],
+            _mode: TransactionMode,
+        ) -> Result<Transaction, JsValue> {
             Ok(Transaction)
         }
     }
@@ -316,7 +334,10 @@ mod idb {
     impl std::future::Future for GetRequest {
         type Output = Result<Option<JsValue>, JsValue>;
 
-        fn poll(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        fn poll(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Self::Output> {
             std::task::Poll::Pending
         }
     }

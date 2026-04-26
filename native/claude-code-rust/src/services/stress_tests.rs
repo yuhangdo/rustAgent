@@ -6,16 +6,13 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::RwLock;
 
+use crate::config::Settings;
 use crate::services::{
-    AutoDreamService, AutoDreamConfig,
-    VoiceService, VoiceConfig,
-    MagicDocsService, MagicDocsConfig,
-    TeamMemorySyncService, TeamMemoryConfig,
-    PluginMarketplaceService, PluginConfig,
-    AgentsService,
+    AgentsService, AutoDreamConfig, AutoDreamService, MagicDocsConfig, MagicDocsService,
+    PluginConfig, PluginMarketplaceService, TeamMemoryConfig, TeamMemorySyncService, VoiceConfig,
+    VoiceService,
 };
 use crate::state::AppState;
-use crate::config::Settings;
 
 #[derive(Debug, Clone)]
 pub struct StressTestResult {
@@ -79,17 +76,28 @@ impl StressTestResult {
         println!("📊 Stress Test Results: {}", self.name);
         println!("{}", "=".repeat(70));
         println!("  Total Operations:    {}", self.total_operations);
-        println!("  Successful:          {} ({:.1}%)",
-                 self.successful_operations,
-                 if self.total_operations > 0 {
-                     (self.successful_operations as f64 / self.total_operations as f64) * 100.0
-                 } else { 0.0 });
-        println!("  Failed:              {} ({:.1}%)",
-                 self.failed_operations,
-                 if self.total_operations > 0 {
-                     (self.failed_operations as f64 / self.total_operations as f64) * 100.0
-                 } else { 0.0 });
-        println!("  Total Duration:      {:.2}s", self.total_duration_ms as f64 / 1000.0);
+        println!(
+            "  Successful:          {} ({:.1}%)",
+            self.successful_operations,
+            if self.total_operations > 0 {
+                (self.successful_operations as f64 / self.total_operations as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "  Failed:              {} ({:.1}%)",
+            self.failed_operations,
+            if self.total_operations > 0 {
+                (self.failed_operations as f64 / self.total_operations as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "  Total Duration:      {:.2}s",
+            self.total_duration_ms as f64 / 1000.0
+        );
         println!("  Avg Latency:         {:.2}ms", self.avg_latency_ms);
         println!("  Min Latency:         {}ms", self.min_latency_ms);
         println!("  Max Latency:         {}ms", self.max_latency_ms);
@@ -168,8 +176,12 @@ impl StressTestRunner {
             result.add_result(latency, true, None);
 
             if (i + 1) % 100 == 0 {
-                println!("  Progress: {}/{} ({}%)", i + 1, self.iterations,
-                         (i + 1) * 100 / self.iterations);
+                println!(
+                    "  Progress: {}/{} ({}%)",
+                    i + 1,
+                    self.iterations,
+                    (i + 1) * 100 / self.iterations
+                );
             }
         }
 
@@ -184,10 +196,7 @@ impl StressTestRunner {
         println!("\n🧪 Testing Voice Service...");
         let mut result = StressTestResult::new("Voice");
 
-        let service = VoiceService::new(
-            self.state.clone(),
-            Some(VoiceConfig::new(true, true)),
-        );
+        let service = VoiceService::new(self.state.clone(), Some(VoiceConfig::new(true, true)));
 
         let start = Instant::now();
 
@@ -199,8 +208,12 @@ impl StressTestRunner {
             result.add_result(latency, true, None);
 
             if (i + 1) % 100 == 0 {
-                println!("  Progress: {}/{} ({}%)", i + 1, self.iterations,
-                         (i + 1) * 100 / self.iterations);
+                println!(
+                    "  Progress: {}/{} ({}%)",
+                    i + 1,
+                    self.iterations,
+                    (i + 1) * 100 / self.iterations
+                );
             }
         }
 
@@ -229,9 +242,10 @@ impl StressTestRunner {
 
         for i in 0..self.iterations {
             let iter_start = Instant::now();
-            let header = service.detect_magic_doc_header(
-                &format!("# MAGIC DOC: Test Document {}\n\n_Update this document_", i)
-            );
+            let header = service.detect_magic_doc_header(&format!(
+                "# MAGIC DOC: Test Document {}\n\n_Update this document_",
+                i
+            ));
             let latency = iter_start.elapsed().as_millis();
 
             match header {
@@ -240,8 +254,12 @@ impl StressTestRunner {
             }
 
             if (i + 1) % 100 == 0 {
-                println!("  Progress: {}/{} ({}%)", i + 1, self.iterations,
-                         (i + 1) * 100 / self.iterations);
+                println!(
+                    "  Progress: {}/{} ({}%)",
+                    i + 1,
+                    self.iterations,
+                    (i + 1) * 100 / self.iterations
+                );
             }
         }
 
@@ -302,7 +320,13 @@ impl StressTestRunner {
 
         for i in 0..self.iterations {
             let iter_start = Instant::now();
-            let query = if i % 3 == 0 { "git" } else if i % 3 == 1 { "code" } else { "test" };
+            let query = if i % 3 == 0 {
+                "git"
+            } else if i % 3 == 1 {
+                "code"
+            } else {
+                "test"
+            };
             let results = service.search(query).await;
             let latency = iter_start.elapsed().as_millis();
 
@@ -310,8 +334,12 @@ impl StressTestRunner {
             result.add_result(latency, true, None);
 
             if (i + 1) % 100 == 0 {
-                println!("  Progress: {}/{} ({}%)", i + 1, self.iterations,
-                         (i + 1) * 100 / self.iterations);
+                println!(
+                    "  Progress: {}/{} ({}%)",
+                    i + 1,
+                    self.iterations,
+                    (i + 1) * 100 / self.iterations
+                );
             }
         }
 
@@ -340,8 +368,12 @@ impl StressTestRunner {
             result.add_result(latency, true, None);
 
             if (i + 1) % 100 == 0 {
-                println!("  Progress: {}/{} ({}%)", i + 1, self.iterations,
-                         (i + 1) * 100 / self.iterations);
+                println!(
+                    "  Progress: {}/{} ({}%)",
+                    i + 1,
+                    self.iterations,
+                    (i + 1) * 100 / self.iterations
+                );
             }
         }
 
@@ -361,28 +393,46 @@ impl StressTestRunner {
         let total_success: usize = results.iter().map(|r| r.successful_operations).sum();
         let total_fail: usize = results.iter().map(|r| r.failed_operations).sum();
         let total_duration: u128 = results.iter().map(|r| r.total_duration_ms).sum();
-        let avg_throughput: f64 = results.iter().map(|r| r.ops_per_second).sum::<f64>() / results.len() as f64;
+        let avg_throughput: f64 =
+            results.iter().map(|r| r.ops_per_second).sum::<f64>() / results.len() as f64;
 
         println!("\n  Overall Statistics:");
         println!("  ├─ Total Operations:     {}", total_ops);
-        println!("  ├─ Successful:         {} ({:.1}%)",
-                 total_success,
-                 if total_ops > 0 { (total_success as f64 / total_ops as f64) * 100.0 } else { 0.0 });
-        println!("  ├─ Failed:              {} ({:.1}%)",
-                 total_fail,
-                 if total_ops > 0 { (total_fail as f64 / total_ops as f64) * 100.0 } else { 0.0 });
-        println!("  ├─ Total Duration:      {:.2}s", total_duration as f64 / 1000.0);
+        println!(
+            "  ├─ Successful:         {} ({:.1}%)",
+            total_success,
+            if total_ops > 0 {
+                (total_success as f64 / total_ops as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "  ├─ Failed:              {} ({:.1}%)",
+            total_fail,
+            if total_ops > 0 {
+                (total_fail as f64 / total_ops as f64) * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "  ├─ Total Duration:      {:.2}s",
+            total_duration as f64 / 1000.0
+        );
         println!("  └─ Avg Throughput:     {:.2} ops/sec", avg_throughput);
 
         println!("\n  Per-Service Breakdown:");
         for r in results {
-            let status = if r.failed_operations == 0 { "✅" } else { "⚠️" };
-            println!("  {} {:20} | {:6} ops | {:6.2} ops/s | {:6.2}ms avg",
-                     status,
-                     r.name,
-                     r.total_operations,
-                     r.ops_per_second,
-                     r.avg_latency_ms);
+            let status = if r.failed_operations == 0 {
+                "✅"
+            } else {
+                "⚠️"
+            };
+            println!(
+                "  {} {:20} | {:6} ops | {:6.2} ops/s | {:6.2}ms avg",
+                status, r.name, r.total_operations, r.ops_per_second, r.avg_latency_ms
+            );
         }
 
         let all_passed = results.iter().all(|r| r.failed_operations == 0);

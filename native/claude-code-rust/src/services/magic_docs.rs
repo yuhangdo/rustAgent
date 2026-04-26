@@ -96,7 +96,7 @@ impl MagicDocsService {
 
     pub async fn register_magic_doc(&self, file_path: &str, header: MagicDocHeader) {
         let mut docs = self.tracked_docs.write().await;
-        
+
         if !docs.contains_key(file_path) {
             docs.insert(
                 file_path.to_string(),
@@ -114,7 +114,7 @@ impl MagicDocsService {
 
     pub async fn check_file(&self, file_path: &str) -> Option<MagicDocHeader> {
         let path = PathBuf::from(file_path);
-        
+
         if !path.exists() {
             return None;
         }
@@ -128,25 +128,30 @@ impl MagicDocsService {
 
     pub async fn update_magic_doc(&self, file_path: &str, context: &str) -> anyhow::Result<()> {
         let mut docs = self.tracked_docs.write().await;
-        
+
         if let Some(doc_info) = docs.get_mut(file_path) {
             let path = PathBuf::from(file_path);
-            
+
             if !path.exists() {
                 docs.remove(file_path);
                 return Ok(());
             }
 
             let current_content = tokio::fs::read_to_string(&path).await?;
-            
-            let updated_content = self.generate_update(&doc_info, &current_content, context).await?;
-            
+
+            let updated_content = self
+                .generate_update(&doc_info, &current_content, context)
+                .await?;
+
             tokio::fs::write(&path, &updated_content).await?;
-            
+
             doc_info.last_updated = Utc::now();
             doc_info.update_count += 1;
-            
-            println!("📚 Magic Doc updated: {} (update #{})", file_path, doc_info.update_count);
+
+            println!(
+                "📚 Magic Doc updated: {} (update #{})",
+                file_path, doc_info.update_count
+            );
         }
 
         Ok(())
@@ -162,7 +167,7 @@ impl MagicDocsService {
         let api_client = crate::api::ApiClient::new(state.settings.clone());
 
         let instructions = doc_info.instructions.as_deref().unwrap_or(
-            "Update this document with new learnings and insights from the conversation."
+            "Update this document with new learnings and insights from the conversation.",
         );
 
         let prompt = format!(
@@ -191,21 +196,16 @@ Please update the document while:
 5. Keeping the document concise and useful
 
 Output only the updated document content, nothing else."#,
-            doc_info.title,
-            instructions,
-            current_content,
-            context
+            doc_info.title, instructions, current_content, context
         );
 
-        let messages = vec![
-            crate::api::ChatMessage {
-                role: "user".to_string(),
-                content: Some(prompt),
-                reasoning_content: None,
-                tool_calls: None,
-                tool_call_id: None,
-            },
-        ];
+        let messages = vec![crate::api::ChatMessage {
+            role: "user".to_string(),
+            content: Some(prompt),
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }];
 
         let response = api_client.chat(messages, None).await?;
 
@@ -223,7 +223,7 @@ Output only the updated document content, nothing else."#,
 
     pub async fn get_status(&self) -> MagicDocsStatus {
         let docs = self.tracked_docs.read().await;
-        
+
         MagicDocsStatus {
             enabled: self.config.enabled,
             auto_update: self.config.auto_update,
@@ -246,10 +246,10 @@ Output only the updated document content, nothing else."#,
     pub async fn save_state(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let state_path = home.join(".claude-code").join("magic_docs_state.json");
-        
+
         let docs = self.tracked_docs.read().await;
         let docs_vec: Vec<MagicDocInfo> = docs.values().cloned().collect();
-        
+
         let content = serde_json::to_string_pretty(&docs_vec)?;
         tokio::fs::write(&state_path, content).await?;
 
@@ -259,14 +259,14 @@ Output only the updated document content, nothing else."#,
     pub async fn load_state(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let state_path = home.join(".claude-code").join("magic_docs_state.json");
-        
+
         if !state_path.exists() {
             return Ok(());
         }
 
         let content = tokio::fs::read_to_string(&state_path).await?;
         let docs_vec: Vec<MagicDocInfo> = serde_json::from_str(&content)?;
-        
+
         let mut docs = self.tracked_docs.write().await;
         for doc in docs_vec {
             docs.insert(doc.path.clone(), doc);

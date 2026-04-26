@@ -106,21 +106,21 @@ impl TeamMemorySyncService {
         println!("🔐 Authenticating for team: {}", team_id);
         println!("🔐 Please visit the following URL to authenticate:");
         println!("   https://claude.ai/team/{}/auth", team_id);
-        
+
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let token_path = home.join(".claude-code").join(".team_token");
-        
+
         let token = format!("team_token_{}_{}", team_id, Utc::now().timestamp());
         tokio::fs::write(&token_path, &token).await?;
-        
+
         println!("🔐 Authentication successful!");
-        
+
         Ok(())
     }
 
     pub async fn sync(&self) -> anyhow::Result<SyncResult> {
         let mut status = self.sync_status.write().await;
-        
+
         if status.is_syncing {
             return Ok(SyncResult {
                 uploaded: 0,
@@ -186,7 +186,7 @@ impl TeamMemorySyncService {
     async fn load_local_memories(&self) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let team_dir = home.join(".claude-code").join("team");
-        
+
         if !team_dir.exists() {
             return Ok(());
         }
@@ -211,7 +211,7 @@ impl TeamMemorySyncService {
 
     async fn fetch_remote_memories(&self) -> anyhow::Result<()> {
         println!("📡 Fetching remote memories...");
-        
+
         let mut memories = self.remote_memories.write().await;
         memories.clear();
 
@@ -225,11 +225,11 @@ impl TeamMemorySyncService {
 
     async fn download_memory(&self, memory: &TeamMemory) -> anyhow::Result<()> {
         println!("📥 Downloading memory: {}", memory.title);
-        
+
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let team_dir = home.join(".claude-code").join("team");
         tokio::fs::create_dir_all(&team_dir).await?;
-        
+
         let memory_path = team_dir.join(format!("{}.json", memory.id));
         let content = serde_json::to_string_pretty(memory)?;
         tokio::fs::write(&memory_path, content).await?;
@@ -240,7 +240,11 @@ impl TeamMemorySyncService {
         Ok(())
     }
 
-    async fn resolve_conflict(&self, local: &TeamMemory, remote: &TeamMemory) -> anyhow::Result<()> {
+    async fn resolve_conflict(
+        &self,
+        local: &TeamMemory,
+        remote: &TeamMemory,
+    ) -> anyhow::Result<()> {
         match self.config.conflict_resolution {
             ConflictResolution::PreferLocal => {
                 self.upload_memory(local).await?;
@@ -265,7 +269,12 @@ impl TeamMemorySyncService {
         Ok(())
     }
 
-    pub async fn create_memory(&self, title: &str, content: &str, tags: Vec<String>) -> anyhow::Result<TeamMemory> {
+    pub async fn create_memory(
+        &self,
+        title: &str,
+        content: &str,
+        tags: Vec<String>,
+    ) -> anyhow::Result<TeamMemory> {
         let memory = TeamMemory {
             id: uuid::Uuid::new_v4().to_string(),
             title: title.to_string(),
@@ -280,7 +289,7 @@ impl TeamMemorySyncService {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let team_dir = home.join(".claude-code").join("team");
         tokio::fs::create_dir_all(&team_dir).await?;
-        
+
         let memory_path = team_dir.join(format!("{}.json", memory.id));
         let json_content = serde_json::to_string_pretty(&memory)?;
         tokio::fs::write(&memory_path, json_content).await?;
@@ -314,8 +323,11 @@ impl TeamMemorySyncService {
             return Ok(());
         }
 
-        println!("🔄 Starting auto-sync (interval: {}s)", self.config.sync_interval_secs);
-        
+        println!(
+            "🔄 Starting auto-sync (interval: {}s)",
+            self.config.sync_interval_secs
+        );
+
         Ok(())
     }
 
@@ -326,8 +338,11 @@ impl TeamMemorySyncService {
 
     pub async fn delete_memory(&self, id: &str) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let memory_path = home.join(".claude-code").join("team").join(format!("{}.json", id));
-        
+        let memory_path = home
+            .join(".claude-code")
+            .join("team")
+            .join(format!("{}.json", id));
+
         if memory_path.exists() {
             tokio::fs::remove_file(&memory_path).await?;
         }

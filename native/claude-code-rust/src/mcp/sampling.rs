@@ -25,27 +25,27 @@ impl SamplingRequest {
             system_prompt: None,
         }
     }
-    
+
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = Some(model.to_string());
         self
     }
-    
+
     pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
         self.max_tokens = Some(max_tokens);
         self
     }
-    
+
     pub fn with_temperature(mut self, temperature: f32) -> Self {
         self.temperature = Some(temperature);
         self
     }
-    
+
     pub fn with_system_prompt(mut self, prompt: &str) -> Self {
         self.system_prompt = Some(prompt.to_string());
         self
     }
-    
+
     pub fn add_message(mut self, role: &str, content: &str) -> Self {
         self.messages.push(SamplingMessage {
             role: role.to_string(),
@@ -101,7 +101,7 @@ impl SamplingManager {
             pending_requests: Arc::new(RwLock::new(Vec::new())),
         }
     }
-    
+
     pub async fn create_request(&self, request: SamplingRequest) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         let mut pending = self.pending_requests.write().await;
@@ -112,13 +112,20 @@ impl SamplingManager {
         });
         id
     }
-    
+
     pub async fn get_request(&self, id: &str) -> Option<SamplingRequest> {
         let pending = self.pending_requests.read().await;
-        pending.iter().find(|r| r.id == id).map(|r| r.request.clone())
+        pending
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.request.clone())
     }
-    
-    pub async fn submit_response(&self, id: &str, response: SamplingResponse) -> anyhow::Result<()> {
+
+    pub async fn submit_response(
+        &self,
+        id: &str,
+        response: SamplingResponse,
+    ) -> anyhow::Result<()> {
         let mut pending = self.pending_requests.write().await;
         if let Some(req) = pending.iter_mut().find(|r| r.id == id) {
             req.response = Some(response);
@@ -127,27 +134,37 @@ impl SamplingManager {
             Err(anyhow::anyhow!("Request not found: {}", id))
         }
     }
-    
+
     pub async fn get_response(&self, id: &str) -> Option<SamplingResponse> {
         let pending = self.pending_requests.read().await;
-        pending.iter().find(|r| r.id == id).and_then(|r| r.response.clone())
+        pending
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.response.clone())
     }
-    
+
     pub async fn list_pending(&self) -> Vec<(String, SamplingRequest)> {
         let pending = self.pending_requests.read().await;
-        pending.iter()
+        pending
+            .iter()
             .filter(|r| r.response.is_none())
             .map(|r| (r.id.clone(), r.request.clone()))
             .collect()
     }
-    
+
     pub async fn clear_completed(&self) {
         let mut pending = self.pending_requests.write().await;
         pending.retain(|r| r.response.is_none());
     }
-    
-    pub async fn execute_with_api(&self, request: SamplingRequest, api_client: &crate::api::ApiClient) -> anyhow::Result<SamplingResponse> {
-        let messages: Vec<crate::api::ChatMessage> = request.messages.iter()
+
+    pub async fn execute_with_api(
+        &self,
+        request: SamplingRequest,
+        api_client: &crate::api::ApiClient,
+    ) -> anyhow::Result<SamplingResponse> {
+        let messages: Vec<crate::api::ChatMessage> = request
+            .messages
+            .iter()
             .map(|m| crate::api::ChatMessage {
                 role: m.role.clone(),
                 content: Some(m.content.text.clone()),

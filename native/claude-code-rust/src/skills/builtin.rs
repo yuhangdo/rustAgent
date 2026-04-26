@@ -2,7 +2,7 @@
 //!
 //! Predefined skills for common operations.
 
-use super::{Skill, SkillParams, SkillContext, SkillResult, SkillError, SkillCategory};
+use super::{Skill, SkillCategory, SkillContext, SkillError, SkillParams, SkillResult};
 use async_trait::async_trait;
 use serde_json;
 
@@ -47,7 +47,11 @@ impl Skill for CommitSkill {
         })
     }
 
-    async fn execute(&self, params: SkillParams, context: SkillContext) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        params: SkillParams,
+        context: SkillContext,
+    ) -> Result<SkillResult, SkillError> {
         // In a real implementation, this would:
         // 1. Get git status to see changes
         // 2. Generate commit message using AI if not provided
@@ -124,7 +128,11 @@ impl Skill for ReviewSkill {
         })
     }
 
-    async fn execute(&self, params: SkillParams, _context: SkillContext) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        params: SkillParams,
+        _context: SkillContext,
+    ) -> Result<SkillResult, SkillError> {
         let files: Vec<String> = params.args;
         let diff_mode = params.flags.contains_key("diff");
         let strict_mode = params.flags.contains_key("strict");
@@ -193,7 +201,11 @@ impl Skill for TestSkill {
         })
     }
 
-    async fn execute(&self, params: SkillParams, _context: SkillContext) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        params: SkillParams,
+        _context: SkillContext,
+    ) -> Result<SkillResult, SkillError> {
         let unit_tests = params.flags.contains_key("unit");
         let integration_tests = params.flags.contains_key("integration");
         let watch_mode = params.flags.contains_key("watch");
@@ -263,7 +275,11 @@ impl Skill for DocumentSkill {
         })
     }
 
-    async fn execute(&self, params: SkillParams, _context: SkillContext) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        params: SkillParams,
+        _context: SkillContext,
+    ) -> Result<SkillResult, SkillError> {
         let api_docs = params.flags.contains_key("api");
         let readme = params.flags.contains_key("readme");
         let force = params.flags.contains_key("force");
@@ -329,7 +345,11 @@ impl Skill for BuildSkill {
         })
     }
 
-    async fn execute(&self, params: SkillParams, _context: SkillContext) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        params: SkillParams,
+        _context: SkillContext,
+    ) -> Result<SkillResult, SkillError> {
         let release_mode = params.flags.contains_key("release");
         let clean_build = params.flags.contains_key("clean");
         let verbose = params.flags.contains_key("verbose");

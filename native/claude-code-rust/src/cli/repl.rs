@@ -46,7 +46,8 @@ impl Repl {
 
             match input {
                 "exit" | "quit" | ".exit" | ":q" => {
-                    println!("\n  {} {}\n",
+                    println!(
+                        "\n  {} {}\n",
                         "👋".yellow(),
                         "Goodbye!".truecolor(255, 140, 66).bold()
                     );
@@ -119,13 +120,15 @@ impl Repl {
 
                 if let Some(choices) = json.get("choices").and_then(|c| c.as_array()) {
                     if let Some(choice) = choices.first() {
-                        if let Some(content) = choice.get("message")
+                        if let Some(content) = choice
+                            .get("message")
                             .and_then(|m| m.get("content"))
                             .and_then(|c| c.as_str())
                         {
                             // Print Claude's response with beautiful formatting
                             ui::print_claude_message(content);
-                            self.conversation_history.push(ChatMessage::assistant(content.to_string()));
+                            self.conversation_history
+                                .push(ChatMessage::assistant(content.to_string()));
 
                             // Print token usage if available
                             if let Some(usage) = json.get("usage") {
@@ -134,7 +137,8 @@ impl Repl {
                                     usage.get("completion_tokens").and_then(|t| t.as_u64()),
                                 ) {
                                     let total = prompt + completion;
-                                    println!("  {} {} prompt · {} generated · {} total",
+                                    println!(
+                                        "  {} {} prompt · {} generated · {} total",
                                         "◦".truecolor(100, 100, 100),
                                         prompt.to_string().truecolor(150, 150, 150),
                                         completion.to_string().truecolor(150, 150, 150),
@@ -170,15 +174,21 @@ impl Repl {
     fn print_history(&self) {
         println!();
         if self.conversation_history.is_empty() {
-            println!("  {} {}",
+            println!(
+                "  {} {}",
                 "◦".truecolor(100, 100, 100),
                 "No conversation history".bright_black()
             );
         } else {
-            println!("  {} {}",
+            println!(
+                "  {} {}",
                 "◦".truecolor(147, 112, 219),
-                format!("Conversation history ({} messages)", self.conversation_history.len())
-                    .truecolor(147, 112, 219).bold()
+                format!(
+                    "Conversation history ({} messages)",
+                    self.conversation_history.len()
+                )
+                .truecolor(147, 112, 219)
+                .bold()
             );
             println!();
 
@@ -199,7 +209,8 @@ impl Repl {
                 let preview: String = content.chars().take(50).collect();
                 let suffix = if content.len() > 50 { "..." } else { "" };
 
-                println!("  {}. {}  {}{}",
+                println!(
+                    "  {}. {}  {}{}",
                     (i + 1).to_string().truecolor(100, 100, 100),
                     role_label,
                     preview.bright_white(),
@@ -212,7 +223,8 @@ impl Repl {
 
     fn print_config(&self) {
         println!();
-        println!("  {} {}",
+        println!(
+            "  {} {}",
             "⚙".truecolor(147, 112, 219),
             "Configuration".truecolor(147, 112, 219).bold()
         );

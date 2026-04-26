@@ -19,6 +19,7 @@ pub mod advanced;
 pub mod agent_runtime;
 pub mod api;
 pub mod cli;
+pub mod compact;
 pub mod config;
 pub mod mcp;
 pub mod memory;
@@ -33,6 +34,7 @@ pub mod skills;
 pub mod state;
 pub mod streaming;
 pub mod terminal;
+pub mod token_budget;
 pub mod tools;
 pub mod utils;
 pub mod voice;
@@ -52,6 +54,10 @@ pub use agent_runtime::{
 };
 pub use api::{AnthropicClient, ApiClient, ChatMessage};
 pub use cli::Cli;
+pub use compact::{
+    full_compact, micro_compact_history, session_memory_compact, CompactDirection, CompactResult,
+    CompactStrategy,
+};
 pub use config::Settings;
 pub use mcp::McpManager;
 pub use memory::MemoryManager;
@@ -72,6 +78,15 @@ pub use skills::{
     SkillResult,
 };
 pub use state::AppState;
+pub use token_budget::{
+    effective_budget, evaluate_budget_decision, model_capability, provider_kind_for_base_url,
+    resolve_context_window, rough_count_message, rough_count_messages, rough_count_text,
+    rough_count_tools, BudgetSource, ModelCapability, ProviderKind, TokenBudgetDecision,
+    TokenBudgetState, TokenThresholds, AUTOCOMPACT_BUFFER_TOKENS, DEFAULT_CONTEXT_WINDOW_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS, ERROR_THRESHOLD_BUFFER_TOKENS, MANUAL_COMPACT_BUFFER_TOKENS,
+    MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES, ONE_MILLION_CONTEXT_TOKENS, POST_COMPACT_TOKEN_BUDGET,
+    SLOT_RETRY_MAX_TOKENS, WARNING_THRESHOLD_BUFFER_TOKENS,
+};
 pub use tools::ToolRegistry;
 pub use voice::VoiceInput;
 

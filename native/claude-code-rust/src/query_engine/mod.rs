@@ -15,6 +15,7 @@ use crate::agent_runtime::{
     AgentRuntime, AgentToolCallHook,
 };
 use crate::api::ChatMessage;
+use crate::compact::{full_compact, CompactDirection};
 use crate::config::Settings;
 
 pub use budget::{BudgetDecision, BudgetState, BudgetTracker};
@@ -125,6 +126,8 @@ impl QueryEngine {
         let runtime = AgentRuntime::new(request.settings.clone());
         let transcript_store = self.transcript_store(&request.session_id);
         let already_surfaced_memory_paths = transcript_store.surfaced_memory_paths().await?;
+        let transcript_replay = transcript_store.replay().await?;
+        let token_budget_state = transcript_replay.token_budget_state.clone();
         let file_history = self.file_history_store();
         let turn_id = request.run_id.clone();
         let transcript_handler = PersistingEventHandler {
@@ -148,6 +151,10 @@ impl QueryEngine {
                     workspace_root: request.workspace_root.clone(),
                     already_surfaced_memory_paths,
                     max_iterations: request.max_iterations,
+                    token_budget_state,
+                    additional_system_sections: transcript_replay.additional_system_sections,
+                    additional_user_context_sections: transcript_replay
+                        .additional_user_context_sections,
                 },
                 &transcript_handler,
                 cancellation,
@@ -170,14 +177,16 @@ impl QueryEngine {
                 transcript_store
                     .append_with_turn(
                         Some(turn_id.clone()),
-                        &TranscriptEvent::assistant_message(uuid::Uuid::new_v4().to_string(), result.answer),
+                        &TranscriptEvent::assistant_message(
+                            uuid::Uuid::new_v4().to_string(),
+                            result.answer,
+                        ),
                     )
                     .await?;
 
                 let mut budget = BudgetTracker::from_state(session.budget_state.clone());
                 for usage in &result.usage_records {
-                    let usage_record =
-                        usage_record_from_agent_usage(&session.active_model, usage);
+                    let usage_record = usage_record_from_agent_usage(&session.active_model, usage);
                     transcript_store
                         .append_with_turn(
                             Some(turn_id.clone()),
@@ -355,6 +364,41 @@ impl QueryEngine {
         self.resume_session(session_id).await
     }
 
+    pub async fn compact_session(
+        &self,
+        session_id: &str,
+        direction: CompactDirection,
+        anchor_index: Option<usize>,
+        preserve_recent_messages: usize,
+    ) -> Result<QuerySessionSnapshot> {
+        let replay = self.transcript_store(session_id).replay().await?;
+        let compact_result = full_compact(
+            &replay.messages,
+            direction,
+            anchor_index,
+            preserve_recent_messages,
+        );
+        self.transcript_store(session_id)
+            .append(&TranscriptEvent::SessionCompacted {
+                strategy: match compact_result.strategy {
+                    crate::compact::CompactStrategy::Micro => "micro".to_string(),
+                    crate::compact::CompactStrategy::SessionMemory => "session_memory".to_string(),
+                    crate::compact::CompactStrategy::Full => "full".to_string(),
+                    crate::compact::CompactStrategy::PartialUpTo => "partial_up_to".to_string(),
+                    crate::compact::CompactStrategy::PartialFrom => "partial_from".to_string(),
+                },
+                history: compact_result.history,
+                system_sections: compact_result.system_sections,
+                user_context_sections: compact_result.user_context_sections,
+                before_tokens: compact_result.before_tokens,
+                after_tokens: compact_result.after_tokens,
+                compacted_messages: compact_result.compacted_message_count,
+                preserved_messages: compact_result.preserved_message_count,
+            })
+            .await?;
+        self.resume_session(session_id).await
+    }
+
     async fn create_session_with_id(
         &self,
         session_id: &str,
@@ -439,7 +483,10 @@ impl QueryEngine {
                     let envelope = self
                         .append_transcript_event(
                             session_id,
-                            TranscriptEvent::user_message(uuid::Uuid::new_v4().to_string(), message.content.clone().unwrap_or_default()),
+                            TranscriptEvent::user_message(
+                                uuid::Uuid::new_v4().to_string(),
+                                message.content.clone().unwrap_or_default(),
+                            ),
                         )
                         .await?;
                     last_user_event_id = Some(envelope.event_id);
@@ -643,6 +690,105 @@ impl AgentEventHandler for PersistingEventHandler<'_> {
                     )
                     .await;
             }
+            AgentEvent::TokenBudgetWarning {
+                active_tokens,
+                warning_threshold,
+                effective_budget_tokens,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::TokenBudgetWarning {
+                            active_tokens: *active_tokens,
+                            warning_threshold: *warning_threshold,
+                            effective_budget_tokens: *effective_budget_tokens,
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::AutoCompactPerformed {
+                strategy,
+                before_tokens,
+                after_tokens,
+                compacted_messages,
+                preserved_messages,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::AutoCompactPerformed {
+                            strategy: strategy.clone(),
+                            before_tokens: *before_tokens,
+                            after_tokens: *after_tokens,
+                            compacted_messages: *compacted_messages,
+                            preserved_messages: *preserved_messages,
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::AutoCompactFailed {
+                strategy,
+                error_summary,
+                consecutive_failures,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::AutoCompactFailed {
+                            strategy: strategy.clone(),
+                            error_summary: error_summary.clone(),
+                            consecutive_failures: *consecutive_failures,
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::SessionCompacted {
+                strategy,
+                history,
+                system_sections,
+                user_context_sections,
+                before_tokens,
+                after_tokens,
+                compacted_messages,
+                preserved_messages,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::SessionCompacted {
+                            strategy: strategy.clone(),
+                            history: history.clone(),
+                            system_sections: system_sections.clone(),
+                            user_context_sections: user_context_sections.clone(),
+                            before_tokens: *before_tokens,
+                            after_tokens: *after_tokens,
+                            compacted_messages: *compacted_messages,
+                            preserved_messages: *preserved_messages,
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::TokenBudgetBlocked {
+                active_tokens,
+                blocking_threshold,
+                effective_budget_tokens,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::TokenBudgetBlocked {
+                            active_tokens: *active_tokens,
+                            blocking_threshold: *blocking_threshold,
+                            effective_budget_tokens: *effective_budget_tokens,
+                        },
+                    )
+                    .await;
+            }
             AgentEvent::ReasoningDelta { .. }
             | AgentEvent::AnswerDelta { .. }
             | AgentEvent::FinalAnswer { .. } => {}
@@ -731,4 +877,59 @@ fn visible_messages(messages: &[ChatMessage]) -> Vec<ChatMessage> {
         })
         .cloned()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn compact_session_persists_compacted_history_and_sections() {
+        let temp = tempfile::tempdir().unwrap();
+        let engine = QueryEngine::for_tests(temp.path().to_path_buf());
+        let session = engine
+            .create_session(temp.path().to_str().unwrap_or("."), "sonnet")
+            .await
+            .unwrap();
+
+        engine
+            .append_transcript_event(
+                &session.session_id,
+                TranscriptEvent::user_message("u1", "inspect auth"),
+            )
+            .await
+            .unwrap();
+        engine
+            .append_transcript_event(
+                &session.session_id,
+                TranscriptEvent::assistant_message("a1", "auth depends on compliance"),
+            )
+            .await
+            .unwrap();
+        engine
+            .append_transcript_event(
+                &session.session_id,
+                TranscriptEvent::user_message("u2", "latest question"),
+            )
+            .await
+            .unwrap();
+
+        let snapshot = engine
+            .compact_session(&session.session_id, CompactDirection::UpTo, None, 1)
+            .await
+            .unwrap();
+        let replay = engine
+            .transcript_store(&session.session_id)
+            .replay()
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.messages.len(), 1);
+        assert_eq!(
+            snapshot.messages[0].content.as_deref(),
+            Some("latest question")
+        );
+        assert_eq!(replay.additional_system_sections.len(), 1);
+        assert!(!replay.additional_user_context_sections.is_empty());
+    }
 }

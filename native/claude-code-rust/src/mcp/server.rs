@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use std::collections::HashMap;
 
-use super::{McpMessage, McpConfig, McpServerInfo};
-use super::tools::ToolRegistry;
-use super::resources::ResourceManager;
 use super::prompts::PromptManager;
+use super::resources::ResourceManager;
 use super::sampling::SamplingManager;
+use super::tools::ToolRegistry;
+use super::{McpConfig, McpMessage, McpServerInfo};
 
 pub struct McpServer {
     name: String,
@@ -17,7 +17,6 @@ pub struct McpServer {
     resource_manager: Arc<ResourceManager>,
     prompt_manager: Arc<PromptManager>,
     sampling_manager: Arc<SamplingManager>,
-
 }
 
 impl McpServer {
@@ -31,34 +30,34 @@ impl McpServer {
             sampling_manager: Arc::new(SamplingManager::new()),
         }
     }
-    
+
     pub fn name(&self) -> &str {
         &self.name
     }
-    
+
     pub fn config(&self) -> &McpConfig {
         &self.config
     }
-    
+
     pub fn tool_registry(&self) -> Arc<ToolRegistry> {
         self.tool_registry.clone()
     }
-    
+
     pub fn resource_manager(&self) -> Arc<ResourceManager> {
         self.resource_manager.clone()
     }
-    
+
     pub fn prompt_manager(&self) -> Arc<PromptManager> {
         self.prompt_manager.clone()
     }
-    
+
     pub fn sampling_manager(&self) -> Arc<SamplingManager> {
         self.sampling_manager.clone()
     }
-    
+
     pub async fn handle_message(&self, message: McpMessage) -> McpMessage {
         let id = message.id.unwrap_or(0);
-        
+
         match message.method.as_deref() {
             Some("initialize") => self.handle_initialize(id, message.params).await,
             Some("tools/list") => self.handle_tools_list(id).await,
@@ -72,45 +71,57 @@ impl McpServer {
             _ => McpMessage::error_response(id, -32601, "Method not found"),
         }
     }
-    
+
     async fn handle_initialize(&self, id: i64, _params: Option<serde_json::Value>) -> McpMessage {
         self.tool_registry.register_builtin_tools().await;
         self.prompt_manager.register_builtin_prompts().await;
-        
-        McpMessage::response(id, serde_json::json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {
-                "tools": {},
-                "resources": {},
-                "prompts": {},
-                "sampling": {}
-            },
-            "serverInfo": {
-                "name": self.name,
-                "version": "0.1.0"
-            }
-        }))
+
+        McpMessage::response(
+            id,
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {
+                    "tools": {},
+                    "resources": {},
+                    "prompts": {},
+                    "sampling": {}
+                },
+                "serverInfo": {
+                    "name": self.name,
+                    "version": "0.1.0"
+                }
+            }),
+        )
     }
-    
+
     async fn handle_tools_list(&self, id: i64) -> McpMessage {
         let tools = self.tool_registry.list().await;
-        McpMessage::response(id, serde_json::json!({
-            "tools": tools
-        }))
+        McpMessage::response(
+            id,
+            serde_json::json!({
+                "tools": tools
+            }),
+        )
     }
-    
+
     async fn handle_tools_call(&self, id: i64, params: Option<serde_json::Value>) -> McpMessage {
         if let Some(params) = params {
             if let Some(name) = params["name"].as_str() {
-                let arguments = params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
-                
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+
                 match self.tool_registry.execute(name, arguments).await {
-                    Ok(result) => McpMessage::response(id, serde_json::json!({
-                        "content": [{
-                            "type": "text",
-                            "text": serde_json::to_string(&result).unwrap_or_default()
-                        }]
-                    })),
+                    Ok(result) => McpMessage::response(
+                        id,
+                        serde_json::json!({
+                            "content": [{
+                                "type": "text",
+                                "text": serde_json::to_string(&result).unwrap_or_default()
+                            }]
+                        }),
+                    ),
                     Err(e) => McpMessage::error_response(id, -32000, &e.to_string()),
                 }
             } else {
@@ -120,21 +131,31 @@ impl McpServer {
             McpMessage::error_response(id, -32602, "Missing parameters")
         }
     }
-    
+
     async fn handle_resources_list(&self, id: i64) -> McpMessage {
         let resources = self.resource_manager.list().await;
-        McpMessage::response(id, serde_json::json!({
-            "resources": resources
-        }))
+        McpMessage::response(
+            id,
+            serde_json::json!({
+                "resources": resources
+            }),
+        )
     }
-    
-    async fn handle_resources_read(&self, id: i64, params: Option<serde_json::Value>) -> McpMessage {
+
+    async fn handle_resources_read(
+        &self,
+        id: i64,
+        params: Option<serde_json::Value>,
+    ) -> McpMessage {
         if let Some(params) = params {
             if let Some(uri) = params["uri"].as_str() {
                 match self.resource_manager.read(uri).await {
-                    Ok(content) => McpMessage::response(id, serde_json::json!({
-                        "contents": [content]
-                    })),
+                    Ok(content) => McpMessage::response(
+                        id,
+                        serde_json::json!({
+                            "contents": [content]
+                        }),
+                    ),
                     Err(e) => McpMessage::error_response(id, -32000, &e.to_string()),
                 }
             } else {
@@ -144,34 +165,42 @@ impl McpServer {
             McpMessage::error_response(id, -32602, "Missing parameters")
         }
     }
-    
+
     async fn handle_prompts_list(&self, id: i64) -> McpMessage {
         let prompts = self.prompt_manager.list().await;
-        McpMessage::response(id, serde_json::json!({
-            "prompts": prompts
-        }))
+        McpMessage::response(
+            id,
+            serde_json::json!({
+                "prompts": prompts
+            }),
+        )
     }
-    
+
     async fn handle_prompts_get(&self, id: i64, params: Option<serde_json::Value>) -> McpMessage {
         if let Some(params) = params {
             if let Some(name) = params["name"].as_str() {
                 let args: HashMap<String, String> = params["arguments"]
                     .as_object()
-                    .map(|obj| obj.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                        .collect())
+                    .map(|obj| {
+                        obj.iter()
+                            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                
+
                 match self.prompt_manager.render(name, args).await {
-                    Ok(rendered) => McpMessage::response(id, serde_json::json!({
-                        "messages": [{
-                            "role": "user",
-                            "content": {
-                                "type": "text",
-                                "text": rendered
-                            }
-                        }]
-                    })),
+                    Ok(rendered) => McpMessage::response(
+                        id,
+                        serde_json::json!({
+                            "messages": [{
+                                "role": "user",
+                                "content": {
+                                    "type": "text",
+                                    "text": rendered
+                                }
+                            }]
+                        }),
+                    ),
                     Err(e) => McpMessage::error_response(id, -32000, &e.to_string()),
                 }
             } else {
@@ -181,14 +210,17 @@ impl McpServer {
             McpMessage::error_response(id, -32602, "Missing parameters")
         }
     }
-    
+
     async fn handle_sampling(&self, id: i64, _params: Option<serde_json::Value>) -> McpMessage {
-        McpMessage::response(id, serde_json::json!({
-            "status": "sampling_request_created",
-            "message": "Sampling request pending approval"
-        }))
+        McpMessage::response(
+            id,
+            serde_json::json!({
+                "status": "sampling_request_created",
+                "message": "Sampling request pending approval"
+            }),
+        )
     }
-    
+
     pub async fn get_info(&self) -> McpServerInfo {
         McpServerInfo {
             name: self.name.clone(),

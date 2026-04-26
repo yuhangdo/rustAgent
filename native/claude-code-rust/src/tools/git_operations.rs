@@ -11,7 +11,7 @@
 //! - git branch: Manage branches
 //! - git checkout: Switch branches or restore files
 
-use super::{Tool, ToolOutput, ToolError};
+use super::{Tool, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
 use std::path::Path;
@@ -85,16 +85,19 @@ impl Tool for GitOperationsTool {
     }
 
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let operation = input["operation"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "operation is required".to_string(),
-                code: Some("missing_parameter".to_string()),
-            })?;
+        let operation = input["operation"].as_str().ok_or_else(|| ToolError {
+            message: "operation is required".to_string(),
+            code: Some("missing_parameter".to_string()),
+        })?;
 
         let path = input["path"].as_str().unwrap_or(".");
         let args: Vec<String> = input["args"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Change to the git repository directory
@@ -119,7 +122,11 @@ impl Tool for GitOperationsTool {
 }
 
 impl GitOperationsTool {
-    async fn execute_git_command(&self, repo_path: &Path, args: &[String]) -> Result<ToolOutput, ToolError> {
+    async fn execute_git_command(
+        &self,
+        repo_path: &Path,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
         let output = tokio::process::Command::new("git")
             .current_dir(repo_path)
             .args(args)
@@ -140,8 +147,10 @@ impl GitOperationsTool {
                 stdout
             }
         } else {
-            format!("Git command failed with status {}\n{}\n{}",
-                   output.status, stdout, stderr)
+            format!(
+                "Git command failed with status {}\n{}\n{}",
+                output.status, stdout, stderr
+            )
         };
 
         Ok(ToolOutput {
@@ -157,10 +166,19 @@ impl GitOperationsTool {
         self.execute_git_command(repo_path, &cmd_args).await
     }
 
-    async fn git_add(&self, repo_path: &Path, input: &serde_json::Value, args: &[String]) -> Result<ToolOutput, ToolError> {
+    async fn git_add(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
         let files: Vec<String> = input["files"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_else(|| vec![".".to_string()]); // Default to add all
 
         let mut cmd_args = vec!["add".to_string()];
@@ -170,12 +188,16 @@ impl GitOperationsTool {
         self.execute_git_command(repo_path, &cmd_args).await
     }
 
-    async fn git_commit(&self, repo_path: &Path, input: &serde_json::Value, args: &[String]) -> Result<ToolOutput, ToolError> {
-        let message = input["message"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "Commit message is required".to_string(),
-                code: Some("missing_message".to_string()),
-            })?;
+    async fn git_commit(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
+        let message = input["message"].as_str().ok_or_else(|| ToolError {
+            message: "Commit message is required".to_string(),
+            code: Some("missing_message".to_string()),
+        })?;
 
         let mut cmd_args = vec!["commit".to_string(), "-m".to_string(), message.to_string()];
         cmd_args.extend_from_slice(args);
@@ -183,7 +205,12 @@ impl GitOperationsTool {
         self.execute_git_command(repo_path, &cmd_args).await
     }
 
-    async fn git_push(&self, repo_path: &Path, input: &serde_json::Value, args: &[String]) -> Result<ToolOutput, ToolError> {
+    async fn git_push(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
         let remote = input["remote"].as_str().unwrap_or("origin");
         let branch = input["branch"].as_str().unwrap_or("");
 
@@ -199,7 +226,12 @@ impl GitOperationsTool {
         self.execute_git_command(repo_path, &cmd_args).await
     }
 
-    async fn git_pull(&self, repo_path: &Path, input: &serde_json::Value, args: &[String]) -> Result<ToolOutput, ToolError> {
+    async fn git_pull(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
         let remote = input["remote"].as_str().unwrap_or("origin");
         let branch = input["branch"].as_str().unwrap_or("");
 
@@ -219,7 +251,10 @@ impl GitOperationsTool {
         cmd_args.extend_from_slice(args);
 
         // Add pretty format if no custom format specified
-        if !args.iter().any(|arg| arg.starts_with("--pretty=") || arg == "--oneline") {
+        if !args
+            .iter()
+            .any(|arg| arg.starts_with("--pretty=") || arg == "--oneline")
+        {
             cmd_args.push("--oneline".to_string());
         }
 
@@ -232,7 +267,12 @@ impl GitOperationsTool {
         self.execute_git_command(repo_path, &cmd_args).await
     }
 
-    async fn git_branch(&self, repo_path: &Path, input: &serde_json::Value, args: &[String]) -> Result<ToolOutput, ToolError> {
+    async fn git_branch(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
         let branch = input["branch"].as_str();
 
         let mut cmd_args = vec!["branch".to_string()];
@@ -245,12 +285,16 @@ impl GitOperationsTool {
         self.execute_git_command(repo_path, &cmd_args).await
     }
 
-    async fn git_checkout(&self, repo_path: &Path, input: &serde_json::Value, args: &[String]) -> Result<ToolOutput, ToolError> {
-        let branch = input["branch"].as_str()
-            .ok_or_else(|| ToolError {
-                message: "Branch name is required for checkout".to_string(),
-                code: Some("missing_branch".to_string()),
-            })?;
+    async fn git_checkout(
+        &self,
+        repo_path: &Path,
+        input: &serde_json::Value,
+        args: &[String],
+    ) -> Result<ToolOutput, ToolError> {
+        let branch = input["branch"].as_str().ok_or_else(|| ToolError {
+            message: "Branch name is required for checkout".to_string(),
+            code: Some("missing_branch".to_string()),
+        })?;
 
         let mut cmd_args = vec!["checkout".to_string(), branch.to_string()];
         cmd_args.extend_from_slice(args);

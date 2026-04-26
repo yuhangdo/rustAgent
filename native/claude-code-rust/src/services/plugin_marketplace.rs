@@ -103,7 +103,7 @@ impl PluginMarketplaceService {
     async fn load_installed_plugins(&self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let plugin_dir = home.join(".claude-code").join("plugins");
-        
+
         if !plugin_dir.exists() {
             return;
         }
@@ -130,16 +130,18 @@ impl PluginMarketplaceService {
 
     pub async fn search(&self, query: &str) -> Vec<MarketplacePlugin> {
         println!("🔍 Searching marketplace for: {}", query);
-        
+
         self.fetch_marketplace().await;
-        
+
         let cache = self.marketplace_cache.read().await;
         cache
             .iter()
             .filter(|p| {
                 p.name.to_lowercase().contains(&query.to_lowercase())
                     || p.description.to_lowercase().contains(&query.to_lowercase())
-                    || p.tags.iter().any(|t| t.to_lowercase().contains(&query.to_lowercase()))
+                    || p.tags
+                        .iter()
+                        .any(|t| t.to_lowercase().contains(&query.to_lowercase()))
             })
             .cloned()
             .collect()
@@ -147,9 +149,9 @@ impl PluginMarketplaceService {
 
     async fn fetch_marketplace(&self) {
         println!("📡 Fetching marketplace data...");
-        
+
         let mut cache = self.marketplace_cache.write().await;
-        
+
         cache.clear();
         cache.extend(vec![
             MarketplacePlugin {
@@ -192,7 +194,7 @@ impl PluginMarketplaceService {
         println!("📦 Installing plugin: {}", plugin_name);
 
         self.fetch_marketplace().await;
-        
+
         let cache = self.marketplace_cache.read().await;
         let marketplace_plugin = cache
             .iter()
@@ -200,7 +202,10 @@ impl PluginMarketplaceService {
             .ok_or_else(|| anyhow::anyhow!("Plugin not found in marketplace: {}", plugin_name))?;
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let plugin_dir = home.join(".claude-code").join("plugins").join(&marketplace_plugin.name);
+        let plugin_dir = home
+            .join(".claude-code")
+            .join("plugins")
+            .join(&marketplace_plugin.name);
         tokio::fs::create_dir_all(&plugin_dir).await?;
 
         let plugin = Plugin {
@@ -232,9 +237,10 @@ module.exports = {
         console.log('Plugin deactivated: ${plugin.name}');
     }
 };
-"#.replace("${plugin.name}", &plugin.name)
-   .replace("${plugin.version}", &plugin.version);
-        
+"#
+        .replace("${plugin.name}", &plugin.name)
+        .replace("${plugin.version}", &plugin.version);
+
         let main_path = plugin_dir.join("index.js");
         tokio::fs::write(&main_path, main_content).await?;
 
@@ -249,7 +255,7 @@ module.exports = {
     pub async fn remove(&self, plugin_name: &str) -> anyhow::Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let plugin_dir = home.join(".claude-code").join("plugins").join(plugin_name);
-        
+
         if plugin_dir.exists() {
             tokio::fs::remove_dir_all(&plugin_dir).await?;
         }
@@ -266,11 +272,11 @@ module.exports = {
         println!("⬆️ Updating plugin: {}", plugin_name);
 
         let mut installed = self.installed_plugins.write().await;
-        
+
         if let Some(plugin) = installed.get_mut(plugin_name) {
             plugin.version = "latest".to_string();
             plugin.updated_at = Some(Utc::now());
-            
+
             let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
             let plugin_dir = home.join(".claude-code").join("plugins").join(plugin_name);
             let manifest_path = plugin_dir.join("plugin.json");
@@ -278,7 +284,7 @@ module.exports = {
             tokio::fs::write(&manifest_path, manifest_content).await?;
 
             println!("✅ Plugin updated: {} v{}", plugin.name, plugin.version);
-            
+
             return Ok(plugin.clone());
         }
 
@@ -287,7 +293,7 @@ module.exports = {
 
     pub async fn update_all(&self) -> anyhow::Result<Vec<String>> {
         println!("⬆️ Updating all plugins...");
-        
+
         let plugins = self.installed_plugins.read().await;
         let plugin_names: Vec<String> = plugins.keys().cloned().collect();
         drop(plugins);
@@ -305,7 +311,7 @@ module.exports = {
 
     pub async fn enable(&self, plugin_name: &str) -> anyhow::Result<()> {
         let mut installed = self.installed_plugins.write().await;
-        
+
         if let Some(plugin) = installed.get_mut(plugin_name) {
             plugin.enabled = true;
             println!("✅ Plugin enabled: {}", plugin_name);
@@ -316,7 +322,7 @@ module.exports = {
 
     pub async fn disable(&self, plugin_name: &str) -> anyhow::Result<()> {
         let mut installed = self.installed_plugins.write().await;
-        
+
         if let Some(plugin) = installed.get_mut(plugin_name) {
             plugin.enabled = false;
             println!("⏸️ Plugin disabled: {}", plugin_name);
@@ -328,7 +334,7 @@ module.exports = {
     pub async fn get_status(&self) -> PluginStatus {
         self.load_installed_plugins().await;
         let plugins = self.installed_plugins.read().await;
-        
+
         PluginStatus {
             enabled: self.config.enabled,
             installed_count: plugins.len(),
@@ -344,12 +350,12 @@ module.exports = {
 
     pub async fn check_updates(&self) -> Vec<(String, String, String)> {
         println!("🔍 Checking for plugin updates...");
-        
+
         self.fetch_marketplace().await;
-        
+
         let plugins = self.installed_plugins.read().await;
         let cache = self.marketplace_cache.read().await;
-        
+
         let mut updates = Vec::new();
         for plugin in plugins.values() {
             if let Some(marketplace) = cache.iter().find(|m| m.name == plugin.name) {

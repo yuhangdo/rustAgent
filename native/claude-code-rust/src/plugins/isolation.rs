@@ -29,15 +29,21 @@ impl Default for IsolationConfig {
                 PathBuf::from("~/.ssh"),
             ],
             allowed_commands: ["git", "npm", "cargo", "rustc", "python", "node"]
-                .iter().map(|s| s.to_string()).collect(),
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             denied_commands: ["rm", "sudo", "su", "chmod", "chown"]
-                .iter().map(|s| s.to_string()).collect(),
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             network_access: true,
             max_memory_mb: 512,
             max_cpu_percent: 50,
             timeout_secs: 30,
             env_whitelist: ["PATH", "HOME", "USER", "TEMP", "TMP"]
-                .iter().map(|s| s.to_string()).collect(),
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
@@ -60,7 +66,7 @@ impl IsolationConfig {
             env_whitelist: vec![],
         }
     }
-    
+
     pub fn permissive() -> Self {
         Self {
             allowed_paths: vec![PathBuf::from("/")],
@@ -74,22 +80,22 @@ impl IsolationConfig {
             env_whitelist: ["*"].iter().map(|s| s.to_string()).collect(),
         }
     }
-    
+
     pub fn with_allowed_path(mut self, path: PathBuf) -> Self {
         self.allowed_paths.push(path);
         self
     }
-    
+
     pub fn with_denied_path(mut self, path: PathBuf) -> Self {
         self.denied_paths.push(path);
         self
     }
-    
+
     pub fn with_allowed_command(mut self, cmd: &str) -> Self {
         self.allowed_commands.insert(cmd.to_string());
         self
     }
-    
+
     pub fn with_network_access(mut self, allowed: bool) -> Self {
         self.network_access = allowed;
         self
@@ -127,109 +133,151 @@ impl PluginSandbox {
             violations: Arc::new(RwLock::new(Vec::new())),
         }
     }
-    
+
     pub fn config(&self) -> &IsolationConfig {
         &self.config
     }
-    
-    pub async fn check_path_access(&self, plugin_name: &str, path: &PathBuf) -> anyhow::Result<bool> {
+
+    pub async fn check_path_access(
+        &self,
+        plugin_name: &str,
+        path: &PathBuf,
+    ) -> anyhow::Result<bool> {
         let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
-        
+
         for denied in &self.config.denied_paths {
             if canonical_path.starts_with(denied) {
-                self.record_violation(plugin_name, ViolationType::PathAccess, 
-                    &format!("Attempted access to denied path: {:?}", path)).await;
+                self.record_violation(
+                    plugin_name,
+                    ViolationType::PathAccess,
+                    &format!("Attempted access to denied path: {:?}", path),
+                )
+                .await;
                 return Ok(false);
             }
         }
-        
-        let allowed = self.config.allowed_paths.iter().any(|allowed| {
-            canonical_path.starts_with(allowed) || path.starts_with(allowed)
-        });
-        
+
+        let allowed = self
+            .config
+            .allowed_paths
+            .iter()
+            .any(|allowed| canonical_path.starts_with(allowed) || path.starts_with(allowed));
+
         if !allowed {
-            self.record_violation(plugin_name, ViolationType::PathAccess,
-                &format!("Attempted access to non-allowed path: {:?}", path)).await;
+            self.record_violation(
+                plugin_name,
+                ViolationType::PathAccess,
+                &format!("Attempted access to non-allowed path: {:?}", path),
+            )
+            .await;
         }
-        
+
         Ok(allowed)
     }
-    
+
     pub async fn check_command(&self, plugin_name: &str, command: &str) -> anyhow::Result<bool> {
         let cmd_name = command.split_whitespace().next().unwrap_or(command);
-        
+
         if self.config.denied_commands.contains(cmd_name) {
-            self.record_violation(plugin_name, ViolationType::CommandExecution,
-                &format!("Attempted to execute denied command: {}", cmd_name)).await;
+            self.record_violation(
+                plugin_name,
+                ViolationType::CommandExecution,
+                &format!("Attempted to execute denied command: {}", cmd_name),
+            )
+            .await;
             return Ok(false);
         }
-        
-        if !self.config.allowed_commands.is_empty() && 
-           !self.config.allowed_commands.contains("*") &&
-           !self.config.allowed_commands.contains(cmd_name) {
-            self.record_violation(plugin_name, ViolationType::CommandExecution,
-                &format!("Attempted to execute non-allowed command: {}", cmd_name)).await;
+
+        if !self.config.allowed_commands.is_empty()
+            && !self.config.allowed_commands.contains("*")
+            && !self.config.allowed_commands.contains(cmd_name)
+        {
+            self.record_violation(
+                plugin_name,
+                ViolationType::CommandExecution,
+                &format!("Attempted to execute non-allowed command: {}", cmd_name),
+            )
+            .await;
             return Ok(false);
         }
-        
+
         Ok(true)
     }
-    
+
     pub async fn check_network(&self, plugin_name: &str) -> anyhow::Result<bool> {
         if !self.config.network_access {
-            self.record_violation(plugin_name, ViolationType::NetworkAccess,
-                "Attempted network access").await;
+            self.record_violation(
+                plugin_name,
+                ViolationType::NetworkAccess,
+                "Attempted network access",
+            )
+            .await;
         }
         Ok(self.config.network_access)
     }
-    
+
     pub async fn check_env(&self, plugin_name: &str, env_var: &str) -> anyhow::Result<bool> {
         if self.config.env_whitelist.contains(&"*".to_string()) {
             return Ok(true);
         }
-        
-        let allowed = self.config.env_whitelist.iter().any(|allowed| {
-            env_var == allowed || env_var.starts_with(&format!("{}_", allowed))
-        });
-        
+
+        let allowed = self
+            .config
+            .env_whitelist
+            .iter()
+            .any(|allowed| env_var == allowed || env_var.starts_with(&format!("{}_", allowed)));
+
         if !allowed {
-            self.record_violation(plugin_name, ViolationType::EnvAccess,
-                &format!("Attempted to access env var: {}", env_var)).await;
+            self.record_violation(
+                plugin_name,
+                ViolationType::EnvAccess,
+                &format!("Attempted to access env var: {}", env_var),
+            )
+            .await;
         }
-        
+
         Ok(allowed)
     }
-    
+
     pub async fn get_timeout(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.config.timeout_secs as u64)
     }
-    
+
     pub async fn get_memory_limit(&self) -> u64 {
         (self.config.max_memory_mb as u64) * 1024 * 1024
     }
-    
-    async fn record_violation(&self, plugin_name: &str, violation_type: ViolationType, details: &str) {
+
+    async fn record_violation(
+        &self,
+        plugin_name: &str,
+        violation_type: ViolationType,
+        details: &str,
+    ) {
         let violation = SandboxViolation {
             plugin_name: plugin_name.to_string(),
             violation_type,
             details: details.to_string(),
             timestamp: chrono::Utc::now(),
         };
-        
+
         println!("⚠️ Sandbox violation: {:?}", violation);
-        
+
         let mut violations = self.violations.write().await;
         violations.push(violation);
     }
-    
+
     pub async fn get_violations(&self, plugin_name: Option<&str>) -> Vec<SandboxViolation> {
         let violations = self.violations.read().await;
         match plugin_name {
-            Some(name) => violations.iter().filter(|v| v.plugin_name == name).cloned().collect(),
+            Some(name) => violations
+                .iter()
+                .filter(|v| v.plugin_name == name)
+                .cloned()
+                .collect(),
             None => violations.clone(),
         }
     }
-    
+
     pub async fn clear_violations(&self, plugin_name: Option<&str>) {
         let mut violations = self.violations.write().await;
         match plugin_name {

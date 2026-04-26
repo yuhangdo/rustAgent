@@ -5,30 +5,30 @@ use std::path::PathBuf;
 /// Initialize a new project
 pub fn init_project(name: &str) -> anyhow::Result<()> {
     let project_dir = PathBuf::from(name);
-    
+
     // Create project directory
     std::fs::create_dir_all(&project_dir)?;
-    
+
     // Create basic structure
     std::fs::create_dir_all(project_dir.join("src"))?;
-    
+
     // Create CLAUDE.md file
     let claude_md = format!(
         "# {}\n\nThis project was initialized with Claude Code.\n\n## Structure\n\n- `src/` - Source code\n- `CLAUDE.md` - Project documentation for Claude\n\n## Getting Started\n\nStart coding with Claude Code!\n",
         name
     );
     std::fs::write(project_dir.join("CLAUDE.md"), claude_md)?;
-    
+
     // Create .gitignore
     let gitignore = "target/\n*.log\n.env\n";
     std::fs::write(project_dir.join(".gitignore"), gitignore)?;
-    
+
     println!("Created project structure:");
     println!("  {}/", name);
     println!("    src/");
     println!("    CLAUDE.md");
     println!("    .gitignore");
-    
+
     Ok(())
 }
 
