@@ -17,6 +17,7 @@ use crate::agent_runtime::{
 use crate::api::ChatMessage;
 use crate::compact::{full_compact, CompactDirection};
 use crate::config::Settings;
+use crate::fast_path::ExecutionModeHint;
 
 pub use budget::{BudgetDecision, BudgetState, BudgetTracker};
 pub use cost::{
@@ -42,6 +43,7 @@ pub struct QuerySubmitRequest {
     pub settings: Settings,
     pub workspace_root: PathBuf,
     pub max_iterations: usize,
+    pub execution_mode_hint: ExecutionModeHint,
 }
 
 impl QueryEngine {
@@ -151,6 +153,7 @@ impl QueryEngine {
                     workspace_root: request.workspace_root.clone(),
                     already_surfaced_memory_paths,
                     max_iterations: request.max_iterations,
+                    execution_mode_hint: request.execution_mode_hint,
                     token_budget_state,
                     additional_system_sections: transcript_replay.additional_system_sections,
                     additional_user_context_sections: transcript_replay
@@ -686,6 +689,40 @@ impl AgentEventHandler for PersistingEventHandler<'_> {
                         Some(self.turn_id.clone()),
                         &TranscriptEvent::MemorySurfaced {
                             paths: paths.clone(),
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::QuickPathSelected {
+                reason,
+                planned_tools,
+                batch_count,
+                used_classifier,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::QuickPathSelected {
+                            reason: reason.clone(),
+                            planned_tools: *planned_tools,
+                            batch_count: *batch_count,
+                            used_classifier: *used_classifier,
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::QuickPathDowngraded {
+                reason,
+                executed_tools,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::QuickPathDowngraded {
+                            reason: reason.clone(),
+                            executed_tools: *executed_tools,
                         },
                     )
                     .await;

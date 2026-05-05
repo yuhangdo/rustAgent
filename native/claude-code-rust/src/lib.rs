@@ -21,6 +21,7 @@ pub mod api;
 pub mod cli;
 pub mod compact;
 pub mod config;
+pub mod fast_path;
 pub mod mcp;
 pub mod memory;
 #[cfg(feature = "mobile-bridge")]
@@ -59,6 +60,12 @@ pub use compact::{
     CompactStrategy,
 };
 pub use config::Settings;
+pub use fast_path::{
+    build_execution_batches, hard_route_decision, validate_quick_plan,
+    validate_quick_plan_for_workspace, validate_read_only_command,
+    validate_read_only_command_in_workspace, ExecutionModeHint, HardRouteDecision, QuickRouteInput,
+    QuickToolPlan, QuickToolStep,
+};
 pub use mcp::McpManager;
 pub use memory::MemoryManager;
 pub use plugins::PluginManager;

@@ -50,6 +50,16 @@ pub enum TranscriptEvent {
     MemorySurfaced {
         paths: Vec<String>,
     },
+    QuickPathSelected {
+        reason: String,
+        planned_tools: usize,
+        batch_count: usize,
+        used_classifier: bool,
+    },
+    QuickPathDowngraded {
+        reason: String,
+        executed_tools: usize,
+    },
     TokenBudgetWarning {
         active_tokens: usize,
         warning_threshold: usize,
@@ -394,7 +404,9 @@ impl TranscriptStore {
                     replay.last_error = Some(error_summary.clone());
                     pending_run = true;
                 }
-                TranscriptEvent::MemorySurfaced { .. } => {}
+                TranscriptEvent::MemorySurfaced { .. }
+                | TranscriptEvent::QuickPathSelected { .. }
+                | TranscriptEvent::QuickPathDowngraded { .. } => {}
                 TranscriptEvent::TokenBudgetWarning {
                     active_tokens,
                     effective_budget_tokens,

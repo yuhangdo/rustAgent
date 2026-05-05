@@ -19,6 +19,9 @@ use crate::compact::{
     CompactDirection, CompactResult, CompactStrategy,
 };
 use crate::config::Settings;
+use crate::fast_path::{
+    ExecutionModeHint, QuickPathExecution, QuickPathExecutor, QuickPathRequest,
+};
 use crate::prompting::{
     ProjectMemorySelectionQuery, ProjectMemorySelector, PromptAssembly, PromptBudget,
     PromptBuildRequest, PromptBuilder, PromptCacheScope, PromptSection,
@@ -51,6 +54,7 @@ pub struct AgentExecutionRequest {
     pub workspace_root: PathBuf,
     pub already_surfaced_memory_paths: Vec<String>,
     pub max_iterations: usize,
+    pub execution_mode_hint: ExecutionModeHint,
     pub token_budget_state: Option<TokenBudgetState>,
     pub additional_system_sections: Vec<PromptSection>,
     pub additional_user_context_sections: Vec<PromptSection>,
@@ -104,6 +108,16 @@ pub enum AgentEvent {
     },
     MemorySurfaced {
         paths: Vec<String>,
+    },
+    QuickPathSelected {
+        reason: String,
+        planned_tools: usize,
+        batch_count: usize,
+        used_classifier: bool,
+    },
+    QuickPathDowngraded {
+        reason: String,
+        executed_tools: usize,
     },
     TokenBudgetWarning {
         active_tokens: usize,
@@ -257,6 +271,7 @@ impl AgentRuntime {
             workspace_root,
             mut already_surfaced_memory_paths,
             max_iterations: requested_max_iterations,
+            execution_mode_hint,
             token_budget_state,
             additional_system_sections,
             additional_user_context_sections,
@@ -281,6 +296,79 @@ impl AgentRuntime {
             let context_window_tokens = self.context_window_tokens();
             TokenBudgetState::new(context_window_tokens, self.max_response_tokens)
         });
+        let quick_path_executor = QuickPathExecutor::new(&self.client, &self.tool_registry);
+
+        if !matches!(
+            execution_mode_hint,
+            ExecutionModeHint::ForceSlow | ExecutionModeHint::PreferSlow
+        ) {
+            let quick_path_outcome = quick_path_executor
+                .execute(
+                    QuickPathRequest {
+                        system_prompt: &system_prompt,
+                        hint: execution_mode_hint,
+                        history: &prompt_state.history,
+                        workspace_root: &workspace_root,
+                        has_additional_context_sections: !prompt_state
+                            .additional_system_sections
+                            .is_empty()
+                            || !prompt_state.additional_user_context_sections.is_empty(),
+                    },
+                    event_handler,
+                    cancellation,
+                )
+                .await?;
+
+            match quick_path_outcome {
+                QuickPathExecution::Completed {
+                    answer,
+                    usage_records: quick_usage_records,
+                } => {
+                    usage_records.extend(
+                        quick_usage_records
+                            .into_iter()
+                            .map(|usage| turn_usage_record(usage.as_ref())),
+                    );
+                    event_handler
+                        .on_event(AgentEvent::FinalAnswer {
+                            answer: answer.clone(),
+                        })
+                        .await;
+                    return Ok(AgentExecutionOutcome::Completed(AgentExecutionResult {
+                        reasoning: String::new(),
+                        answer,
+                        iterations: 1,
+                        usage_records,
+                        token_budget_state: Some(token_budget_state.clone()),
+                    }));
+                }
+                QuickPathExecution::Downgraded {
+                    appended_history,
+                    usage_records: quick_usage_records,
+                    ..
+                } => {
+                    usage_records.extend(
+                        quick_usage_records
+                            .into_iter()
+                            .map(|usage| turn_usage_record(usage.as_ref())),
+                    );
+                    prompt_state.history.extend(appended_history);
+                }
+                QuickPathExecution::Skipped {
+                    usage_records: quick_usage_records,
+                    ..
+                } => {
+                    usage_records.extend(
+                        quick_usage_records
+                            .into_iter()
+                            .map(|usage| turn_usage_record(usage.as_ref())),
+                    );
+                }
+                QuickPathExecution::Cancelled => {
+                    return Ok(AgentExecutionOutcome::Cancelled);
+                }
+            }
+        }
 
         for iteration in 0..max_iterations {
             if cancellation.is_cancelled() {

@@ -19,6 +19,7 @@ use tokio::sync::RwLock;
 use crate::agent_runtime::{AgentCancellation, AgentEvent, AgentEventHandler};
 use crate::api::ChatMessage;
 use crate::config::Settings;
+use crate::fast_path::ExecutionModeHint;
 use crate::query_engine::{BudgetState, QueryEngine, QuerySubmitRequest, SessionUsageTotals};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +35,8 @@ pub struct BridgeRunRequest {
     pub workspace_root: Option<String>,
     #[serde(default)]
     pub max_iterations: Option<usize>,
+    #[serde(default)]
+    pub execution_mode_hint: ExecutionModeHint,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +77,8 @@ pub enum BridgeEventType {
     ContextCompacted,
     ContextBlocked,
     MemorySurfaced,
+    QuickPathSelected,
+    QuickPathDowngraded,
     ReasoningSummary,
     ToolCallRequested,
     ToolCallCompleted,
@@ -316,6 +321,7 @@ impl MobileBridgeServer {
                     settings,
                     workspace_root,
                     max_iterations: request.max_iterations.unwrap_or(0),
+                    execution_mode_hint: request.execution_mode_hint,
                 },
                 &event_sink,
                 &cancellation,
@@ -637,6 +643,44 @@ impl AgentEventHandler for BridgeEventSink {
                         BridgeEventType::MemorySurfaced,
                         "Memory Surfaced",
                         trim_for_event(&paths.join(", "), 400),
+                    )
+                    .await;
+            }
+            AgentEvent::QuickPathSelected {
+                reason,
+                planned_tools,
+                batch_count,
+                used_classifier,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::QuickPathSelected,
+                        "Quick Path Selected",
+                        format!(
+                            "{} Planned {} tool(s) across {} batch(es); classifier used: {}.",
+                            trim_for_event(&reason, 220),
+                            planned_tools,
+                            batch_count,
+                            used_classifier
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::QuickPathDowngraded {
+                reason,
+                executed_tools,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::QuickPathDowngraded,
+                        "Quick Path Downgraded",
+                        format!(
+                            "{} After {} tool(s), the run moved to the slow path.",
+                            trim_for_event(&reason, 220),
+                            executed_tools
+                        ),
                     )
                     .await;
             }

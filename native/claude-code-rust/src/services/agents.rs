@@ -294,6 +294,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
                     workspace_root: state.settings.working_dir.clone(),
                     already_surfaced_memory_paths: Vec::new(),
                     max_iterations: 8,
+                    execution_mode_hint: crate::fast_path::ExecutionModeHint::Auto,
                     token_budget_state: None,
                     additional_system_sections: Vec::new(),
                     additional_user_context_sections: Vec::new(),
