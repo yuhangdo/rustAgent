@@ -461,6 +461,8 @@ impl Cli {
         let service = crate::services::AgentsService::new(state);
 
         let agent_type = match agent_type.to_lowercase().as_str() {
+            "coordinator" | "coord" => crate::services::AgentType::Coordinator,
+            "worker" => crate::services::AgentType::Worker,
             "guide" | "claude-code-guide" => crate::services::AgentType::ClaudeCodeGuide,
             "explore" => crate::services::AgentType::Explore,
             "plan" => crate::services::AgentType::Plan,
@@ -468,7 +470,9 @@ impl Cli {
             "general" | "general-purpose" => crate::services::AgentType::GeneralPurpose,
             _ => {
                 println!("Unknown agent type: {}", agent_type);
-                println!("Available types: guide, explore, plan, verify, general");
+                println!(
+                    "Available types: coordinator, worker, guide, explore, plan, verify, general"
+                );
                 return Ok(());
             }
         };

@@ -125,7 +125,36 @@ impl QueryEngine {
             .or_else(|| self.last_user_event_id(&request.session_id))
             .ok_or_else(|| anyhow!("QueryEngine submit requires at least one user message"))?;
 
-        let runtime = AgentRuntime::new(request.settings.clone());
+        let coordinator_mode = crate::orchestration::is_coordinator_mode_enabled();
+        let scratchpad_path = if coordinator_mode && crate::orchestration::is_scratchpad_enabled() {
+            let path = request.workspace_root.join(".claude-scratchpad");
+            tokio::fs::create_dir_all(&path).await?;
+            Some(path.display().to_string())
+        } else {
+            None
+        };
+        let system_prompt = if coordinator_mode {
+            crate::orchestration::coordinator_system_prompt(
+                &request.system_prompt,
+                scratchpad_path.as_deref(),
+            )
+        } else {
+            request.system_prompt
+        };
+        let allowed_tool_names = if coordinator_mode {
+            Some(crate::orchestration::coordinator_allowed_tool_names())
+        } else {
+            None
+        };
+        let runtime = if coordinator_mode {
+            let mut registry = crate::tools::ToolRegistry::empty();
+            for tool in crate::orchestration::coordinator_tools(request.settings.clone()) {
+                registry.register(tool);
+            }
+            AgentRuntime::new_with_tool_registry(request.settings.clone(), registry)
+        } else {
+            AgentRuntime::new(request.settings.clone())
+        };
         let transcript_store = self.transcript_store(&request.session_id);
         let already_surfaced_memory_paths = transcript_store.surfaced_memory_paths().await?;
         let transcript_replay = transcript_store.replay().await?;
@@ -148,7 +177,7 @@ impl QueryEngine {
         let outcome = runtime
             .execute_with_hook(
                 AgentExecutionRequest {
-                    system_prompt: request.system_prompt,
+                    system_prompt,
                     history: session.messages.clone(),
                     workspace_root: request.workspace_root.clone(),
                     already_surfaced_memory_paths,
@@ -158,6 +187,7 @@ impl QueryEngine {
                     additional_system_sections: transcript_replay.additional_system_sections,
                     additional_user_context_sections: transcript_replay
                         .additional_user_context_sections,
+                    allowed_tool_names,
                 },
                 &transcript_handler,
                 cancellation,

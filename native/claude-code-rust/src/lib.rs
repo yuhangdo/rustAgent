@@ -26,6 +26,7 @@ pub mod mcp;
 pub mod memory;
 #[cfg(feature = "mobile-bridge")]
 pub mod mobile_bridge;
+pub mod orchestration;
 pub mod plugins;
 pub mod prompting;
 pub mod query_engine;
@@ -68,6 +69,14 @@ pub use fast_path::{
 };
 pub use mcp::McpManager;
 pub use memory::MemoryManager;
+pub use orchestration::{
+    coordinator_allowed_tool_names, coordinator_allowed_tools, coordinator_system_prompt,
+    is_coordinator_mode_enabled, is_scratchpad_enabled, is_simple_worker_mode_enabled,
+    is_swarm_mode_enabled, render_task_notification, worker_allowed_tool_names,
+    worker_allowed_tools, worker_system_prompt, AgentTeam, AgentTeamStore, MailboxMessage,
+    MailboxMessageMode, SwarmHookEvent, SwarmHookKind, SwarmTask, SwarmTaskPriority,
+    SwarmTaskStatus, TaskNotification, Teammate, TeammateRole, TeammateStatus,
+};
 pub use plugins::PluginManager;
 pub use prompting::{
     ProjectMemoryCandidate, ProjectMemorySelectionQuery, ProjectMemorySelector, PromptAssembly,

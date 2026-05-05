@@ -79,11 +79,16 @@ pub struct ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Create an empty tool registry for restricted agent modes.
+    pub fn empty() -> Self {
+        Self {
+            tools: HashMap::new(),
+        }
+    }
+
     /// Create a new tool registry
     pub fn new() -> Self {
-        let mut registry = Self {
-            tools: HashMap::new(),
-        };
+        let mut registry = Self::empty();
 
         // Register built-in tools
         registry.register(Box::new(file_read::FileReadTool::new()));

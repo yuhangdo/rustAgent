@@ -1,5 +1,6 @@
 //! Shared agent runtime with tool execution support.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -58,6 +59,7 @@ pub struct AgentExecutionRequest {
     pub token_budget_state: Option<TokenBudgetState>,
     pub additional_system_sections: Vec<PromptSection>,
     pub additional_user_context_sections: Vec<PromptSection>,
+    pub allowed_tool_names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -234,13 +236,17 @@ pub struct AgentUsageRecord {
 
 impl AgentRuntime {
     pub fn new(settings: Settings) -> Self {
+        Self::new_with_tool_registry(settings, ToolRegistry::new())
+    }
+
+    pub fn new_with_tool_registry(settings: Settings, tool_registry: ToolRegistry) -> Self {
         let max_response_tokens = settings.api.max_tokens;
         let working_dir = settings.working_dir.clone();
         let memory_enabled = settings.memory.enabled;
         let auto_memory_directory = settings.memory.auto_memory_directory.clone();
         Self {
             client: ApiClient::new(settings),
-            tool_registry: ToolRegistry::new(),
+            tool_registry,
             max_response_tokens,
             working_dir,
             memory_enabled,
@@ -275,6 +281,7 @@ impl AgentRuntime {
             token_budget_state,
             additional_system_sections,
             additional_user_context_sections,
+            allowed_tool_names,
         } = request;
         let mut latest_reasoning = String::new();
         let mut usage_records = Vec::new();
@@ -283,7 +290,13 @@ impl AgentRuntime {
         } else {
             requested_max_iterations.min(MAX_ALLOWED_ITERATIONS)
         };
-        let tool_definitions = self.tool_definitions();
+        let allowed_tool_names = allowed_tool_names.map(|tools| {
+            tools
+                .into_iter()
+                .map(|tool| tool.to_ascii_lowercase())
+                .collect::<HashSet<_>>()
+        });
+        let tool_definitions = self.tool_definitions(allowed_tool_names.as_ref());
         let memory_selector = ApiProjectMemorySelector {
             client: &self.client,
         };
@@ -488,6 +501,25 @@ impl AgentRuntime {
                     }
 
                     let tool_name = tool_call.function.name.clone();
+                    if !tool_is_allowed(&tool_name, allowed_tool_names.as_ref()) {
+                        let error_payload = json!({
+                            "success": false,
+                            "error": format!("Tool not allowed in this agent mode: {}", tool_name),
+                            "code": "tool_not_allowed",
+                        });
+                        prompt_state.history.push(ChatMessage::tool(
+                            tool_call.id.clone(),
+                            error_payload.to_string(),
+                        ));
+                        event_handler
+                            .on_event(AgentEvent::ToolCallFailed {
+                                tool_call_id: tool_call.id.clone(),
+                                tool_name,
+                                error_summary: "tool_not_allowed".to_string(),
+                            })
+                            .await;
+                        continue;
+                    }
                     let parsed_arguments = parse_tool_arguments(&tool_call.function.arguments)?;
                     let normalized_arguments =
                         normalize_tool_input(&tool_name, parsed_arguments, &workspace_root);
@@ -578,10 +610,14 @@ impl AgentRuntime {
         ))
     }
 
-    fn tool_definitions(&self) -> Vec<ToolDefinition> {
+    fn tool_definitions(
+        &self,
+        allowed_tool_names: Option<&HashSet<String>>,
+    ) -> Vec<ToolDefinition> {
         self.tool_registry
             .list()
             .into_iter()
+            .filter(|tool| tool_is_allowed(tool.name(), allowed_tool_names))
             .map(|tool| ToolDefinition::new(tool.name(), tool.description(), tool.input_schema()))
             .collect()
     }
@@ -1341,6 +1377,12 @@ fn parse_tool_arguments(raw: &str) -> Result<Value> {
     }
 
     serde_json::from_str(raw).map_err(|error| anyhow!("Invalid tool arguments JSON: {}", error))
+}
+
+fn tool_is_allowed(tool_name: &str, allowed_tool_names: Option<&HashSet<String>>) -> bool {
+    allowed_tool_names
+        .map(|allowed| allowed.contains(&tool_name.to_ascii_lowercase()))
+        .unwrap_or(true)
 }
 
 fn normalize_tool_input(tool_name: &str, mut input: Value, workspace_root: &Path) -> Value {

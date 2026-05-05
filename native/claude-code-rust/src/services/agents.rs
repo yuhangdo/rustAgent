@@ -18,6 +18,8 @@ use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentType {
+    Coordinator,
+    Worker,
     ClaudeCodeGuide,
     Explore,
     GeneralPurpose,
@@ -29,6 +31,8 @@ pub enum AgentType {
 impl std::fmt::Display for AgentType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            AgentType::Coordinator => write!(f, "coordinator"),
+            AgentType::Worker => write!(f, "worker"),
             AgentType::ClaudeCodeGuide => write!(f, "claude-code-guide"),
             AgentType::Explore => write!(f, "explore"),
             AgentType::GeneralPurpose => write!(f, "general-purpose"),
@@ -103,6 +107,52 @@ impl AgentsService {
 
     fn load_builtin_agents() -> HashMap<AgentType, AgentDefinition> {
         let mut agents = HashMap::new();
+
+        agents.insert(
+            AgentType::Coordinator,
+            AgentDefinition {
+                agent_type: AgentType::Coordinator,
+                name: "Coordinator".to_string(),
+                description: "Plans multi-agent work, delegates to workers, and synthesizes results"
+                    .to_string(),
+                when_to_use:
+                    "For complex tasks that need centralized planning, dependency handling, and synthesis"
+                        .to_string(),
+                tools: crate::orchestration::coordinator_allowed_tool_names(),
+                model: "sonnet".to_string(),
+                system_prompt: crate::orchestration::coordinator_system_prompt(
+                    "You coordinate project agents for complex engineering tasks.",
+                    None,
+                ),
+                source: "built-in".to_string(),
+                base_dir: "built-in".to_string(),
+            },
+        );
+
+        let worker_tools = crate::orchestration::worker_allowed_tool_names(
+            crate::orchestration::is_simple_worker_mode_enabled(),
+        );
+        agents.insert(
+            AgentType::Worker,
+            AgentDefinition {
+                agent_type: AgentType::Worker,
+                name: "Worker".to_string(),
+                description: "Executes a concrete assignment from a coordinator or team lead"
+                    .to_string(),
+                when_to_use:
+                    "For delegated implementation, exploration, or verification work with no nested teams"
+                        .to_string(),
+                tools: worker_tools.clone(),
+                model: "sonnet".to_string(),
+                system_prompt: crate::orchestration::worker_system_prompt(
+                    "You are a project worker agent.",
+                    &worker_tools,
+                    None,
+                ),
+                source: "built-in".to_string(),
+                base_dir: "built-in".to_string(),
+            },
+        );
 
         agents.insert(
             AgentType::ClaudeCodeGuide,
@@ -285,7 +335,18 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
 
     async fn execute_agent(&self, agent: &AgentDefinition, prompt: &str) -> anyhow::Result<String> {
         let state = self.state.read().await;
-        let runtime = crate::agent_runtime::AgentRuntime::new(state.settings.clone());
+        let runtime = if agent.agent_type == AgentType::Coordinator {
+            let mut registry = crate::tools::ToolRegistry::empty();
+            for tool in crate::orchestration::coordinator_tools(state.settings.clone()) {
+                registry.register(tool);
+            }
+            crate::agent_runtime::AgentRuntime::new_with_tool_registry(
+                state.settings.clone(),
+                registry,
+            )
+        } else {
+            crate::agent_runtime::AgentRuntime::new(state.settings.clone())
+        };
         let outcome = runtime
             .execute(
                 crate::agent_runtime::AgentExecutionRequest {
@@ -298,6 +359,7 @@ Be thorough and systematic. Focus on finding and reporting issues."#.to_string()
                     token_budget_state: None,
                     additional_system_sections: Vec::new(),
                     additional_user_context_sections: Vec::new(),
+                    allowed_tool_names: Some(agent.tools.clone()),
                 },
                 &crate::agent_runtime::NoopAgentEventHandler,
                 &crate::agent_runtime::NoopAgentCancellation,
