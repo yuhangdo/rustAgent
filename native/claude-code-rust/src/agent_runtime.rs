@@ -15,6 +15,10 @@ use crate::api::{
     ApiClient, ApiPromptCacheScope, ApiPromptCacheTextBlock, ChatMessage, PromptCacheMetadata,
     ToolCall, ToolCallFunction, ToolDefinition, Usage,
 };
+use crate::auto_mode::{
+    auto_mode_tool_denial_payload, AutoModeClassifierRunMode, AutoModeClassifierStage,
+    AutoModeConfig, AutoModeDecisionBehavior, AutoModeSession, AutoModeToolCall,
+};
 use crate::compact::{
     full_compact, full_compact_with_summary, micro_compact_history, session_memory_compact,
     CompactDirection, CompactResult, CompactStrategy,
@@ -125,6 +129,22 @@ pub enum AgentEvent {
         reason: String,
         executed_tools: usize,
     },
+    AutoModeEntered {
+        previous_mode: String,
+        model: String,
+        stripped_dangerous_rules: Vec<String>,
+    },
+    AutoModeExited {
+        restored_dangerous_rules: Vec<String>,
+    },
+    AutoModeDecisionRecorded {
+        tool_name: String,
+        behavior: AutoModeDecisionBehavior,
+        reason: String,
+        stage: Option<AutoModeClassifierStage>,
+        unavailable: bool,
+        transcript_too_long: bool,
+    },
     PlanModeEntered {
         previous_mode: String,
     },
@@ -216,6 +236,7 @@ pub struct AgentRuntime {
     memory_enabled: bool,
     auto_memory_directory: Option<PathBuf>,
     plan_mode_session: PlanModeSession,
+    auto_mode_session: AutoModeSession,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -259,6 +280,11 @@ impl AgentRuntime {
         let memory_enabled = settings.memory.enabled;
         let auto_memory_directory = settings.memory.auto_memory_directory.clone();
         let plan_mode_session = PlanModeSession::new(working_dir.clone());
+        let auto_mode_session = AutoModeSession::new(
+            working_dir.clone(),
+            settings.model.clone(),
+            auto_mode_config_from_settings(&settings),
+        );
         tool_registry.register_plan_mode_tools(plan_mode_session.clone());
         Self {
             client: ApiClient::new(settings),
@@ -268,6 +294,7 @@ impl AgentRuntime {
             memory_enabled,
             auto_memory_directory,
             plan_mode_session,
+            auto_mode_session,
         }
     }
 
@@ -303,6 +330,22 @@ impl AgentRuntime {
         self.plan_mode_session
             .set_workspace_root(workspace_root.clone())
             .await;
+        self.auto_mode_session
+            .set_workspace_root(workspace_root.clone())
+            .await;
+        let auto_mode_status = self.auto_mode_session.status().await;
+        if auto_mode_status.active {
+            event_handler
+                .on_event(AgentEvent::AutoModeEntered {
+                    previous_mode: auto_mode_status
+                        .previous_mode
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string()),
+                    model: auto_mode_status.model.clone(),
+                    stripped_dangerous_rules: auto_mode_status.stripped_dangerous_rules.clone(),
+                })
+                .await;
+        }
         let mut latest_reasoning = String::new();
         let mut usage_records = Vec::new();
         let max_iterations = if requested_max_iterations == 0 {
@@ -330,10 +373,13 @@ impl AgentRuntime {
         });
         let quick_path_executor = QuickPathExecutor::new(&self.client, &self.tool_registry);
 
-        if !matches!(
-            execution_mode_hint,
-            ExecutionModeHint::ForceSlow | ExecutionModeHint::PreferSlow
-        ) {
+        let auto_mode_active_for_run = auto_mode_status.active;
+        if !auto_mode_active_for_run
+            && !matches!(
+                execution_mode_hint,
+                ExecutionModeHint::ForceSlow | ExecutionModeHint::PreferSlow
+            )
+        {
             let quick_path_outcome = quick_path_executor
                 .execute(
                     QuickPathRequest {
@@ -410,9 +456,13 @@ impl AgentRuntime {
             let plan_mode_status = self.plan_mode_session.status().await;
             let tool_definitions =
                 self.tool_definitions(allowed_tool_names.as_ref(), &plan_mode_status);
+            let auto_system_prompt = self
+                .auto_mode_session
+                .decorated_system_prompt(&system_prompt)
+                .await;
             let turn_system_prompt = self
                 .plan_mode_session
-                .decorated_system_prompt(&system_prompt)
+                .decorated_system_prompt(&auto_system_prompt)
                 .await;
             let prepared_turn = self
                 .prepare_turn_context(
@@ -558,6 +608,51 @@ impl AgentRuntime {
                     let parsed_arguments = parse_tool_arguments(&tool_call.function.arguments)?;
                     let normalized_arguments =
                         normalize_tool_input(&tool_name, parsed_arguments, &workspace_root);
+
+                    if self.auto_mode_session.is_active().await {
+                        let access = self
+                            .tool_registry
+                            .get(&tool_name)
+                            .map(|tool| tool.access())
+                            .unwrap_or(crate::tools::ToolAccess::Write);
+                        let decision = self
+                            .auto_mode_session
+                            .classify_tool_call(AutoModeToolCall::new(
+                                tool_name.clone(),
+                                normalized_arguments.clone(),
+                                access,
+                                prompt_state.history.clone(),
+                            ))
+                            .await;
+                        event_handler
+                            .on_event(AgentEvent::AutoModeDecisionRecorded {
+                                tool_name: tool_name.clone(),
+                                behavior: decision.behavior,
+                                reason: decision.reason.clone(),
+                                stage: decision.stage,
+                                unavailable: decision.unavailable,
+                                transcript_too_long: decision.transcript_too_long,
+                            })
+                            .await;
+
+                        if decision.behavior != AutoModeDecisionBehavior::Allow {
+                            let error_payload =
+                                auto_mode_tool_denial_payload(&tool_name, &decision);
+                            prompt_state.history.push(ChatMessage::tool(
+                                tool_call.id.clone(),
+                                error_payload.to_string(),
+                            ));
+                            event_handler
+                                .on_event(AgentEvent::ToolCallFailed {
+                                    tool_call_id: tool_call.id.clone(),
+                                    tool_name,
+                                    error_summary: decision.reason,
+                                })
+                                .await;
+                            continue;
+                        }
+                    }
+
                     tool_call_hook
                         .before_tool_call(&tool_call.id, &tool_name, &normalized_arguments)
                         .await?;
@@ -1520,6 +1615,35 @@ fn tool_is_allowed(tool_name: &str, allowed_tool_names: Option<&HashSet<String>>
     allowed_tool_names
         .map(|allowed| allowed.contains(&tool_name.to_ascii_lowercase()))
         .unwrap_or(true)
+}
+
+fn auto_mode_config_from_settings(settings: &Settings) -> AutoModeConfig {
+    let env_enabled = std::env::var("CLAUDE_CODE_ENABLE_AUTO_MODE")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let env_disabled = std::env::var("CLAUDE_CODE_DISABLE_AUTO_MODE")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    let run_mode = match settings
+        .safety
+        .auto_mode_stage
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "fast" => AutoModeClassifierRunMode::Fast,
+        "thinking" => AutoModeClassifierRunMode::Thinking,
+        _ => AutoModeClassifierRunMode::Both,
+    };
+
+    AutoModeConfig {
+        enabled: (settings.safety.auto_mode || env_enabled) && !env_disabled,
+        run_mode,
+        circuit_breaker_enabled: settings.safety.auto_mode_circuit_breaker,
+        user_allow_rules: settings.safety.auto_mode_allow_rules.clone(),
+        user_deny_rules: settings.safety.auto_mode_deny_rules.clone(),
+        user_environment_rules: settings.safety.auto_mode_environment.clone(),
+        ..AutoModeConfig::default()
+    }
 }
 
 fn should_stop_for_plan_approval(tool_name: &str, output: &ToolOutput) -> bool {

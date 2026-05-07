@@ -53,6 +53,8 @@ pub struct BridgeRequestSettings {
     pub api_key: String,
     pub model: String,
     pub system_prompt: String,
+    #[serde(default)]
+    pub auto_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,6 +81,9 @@ pub enum BridgeEventType {
     MemorySurfaced,
     QuickPathSelected,
     QuickPathDowngraded,
+    AutoModeEntered,
+    AutoModeExited,
+    AutoModeDecision,
     PlanModeEntered,
     PlanModeAwaitingApproval,
     ReasoningSummary,
@@ -686,6 +691,64 @@ impl AgentEventHandler for BridgeEventSink {
                     )
                     .await;
             }
+            AgentEvent::AutoModeEntered {
+                previous_mode,
+                model,
+                stripped_dangerous_rules,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::AutoModeExited,
+                        "Auto Mode Entered",
+                        format!(
+                            "Previous mode `{}` saved; classifier model `{}` active; stripped {} dangerous allow rule(s).",
+                            previous_mode,
+                            model,
+                            stripped_dangerous_rules.len()
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::AutoModeExited {
+                restored_dangerous_rules,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::AutoModeEntered,
+                        "Auto Mode Exited",
+                        format!(
+                            "Restored {} dangerous allow rule(s).",
+                            restored_dangerous_rules.len()
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::AutoModeDecisionRecorded {
+                tool_name,
+                behavior,
+                reason,
+                stage,
+                unavailable,
+                transcript_too_long,
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::AutoModeDecision,
+                        format!("Auto Mode Decision: {}", tool_name),
+                        format!(
+                            "{:?} via {:?}; unavailable: {}; transcript too long: {}; {}",
+                            behavior,
+                            stage,
+                            unavailable,
+                            transcript_too_long,
+                            trim_for_event(&reason, 240)
+                        ),
+                    )
+                    .await;
+            }
             AgentEvent::PlanModeEntered { previous_mode } => {
                 self.server
                     .append_event(
@@ -890,6 +953,7 @@ fn build_settings(request_settings: &BridgeRequestSettings, workspace_root: Path
     settings.api.base_url = request_settings.base_url.clone();
     settings.model = request_settings.model.clone();
     settings.working_dir = workspace_root;
+    settings.safety.auto_mode = request_settings.auto_mode;
     settings
 }
 

@@ -28,6 +28,9 @@ pub struct Settings {
     pub voice: VoiceSettings,
     /// Plugin settings
     pub plugins: PluginSettings,
+    /// Safety and permission-mode settings
+    #[serde(default)]
+    pub safety: SafetySettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +69,41 @@ pub struct PluginSettings {
     pub auto_update: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SafetySettings {
+    /// Enable Auto Mode autonomous permission classification
+    #[serde(default)]
+    pub auto_mode: bool,
+    /// Emergency switch that prevents Auto Mode activation
+    #[serde(default)]
+    pub auto_mode_circuit_breaker: bool,
+    /// Classifier run mode: both, fast, or thinking
+    #[serde(default = "default_auto_mode_stage")]
+    pub auto_mode_stage: String,
+    /// User allow rules appended to the Auto Mode classifier policy
+    #[serde(default)]
+    pub auto_mode_allow_rules: Vec<String>,
+    /// User deny rules appended to the Auto Mode classifier policy
+    #[serde(default)]
+    pub auto_mode_deny_rules: Vec<String>,
+    /// User environment notes appended to the Auto Mode classifier policy
+    #[serde(default)]
+    pub auto_mode_environment: Vec<String>,
+}
+
+impl Default for SafetySettings {
+    fn default() -> Self {
+        Self {
+            auto_mode: false,
+            auto_mode_circuit_breaker: false,
+            auto_mode_stage: default_auto_mode_stage(),
+            auto_mode_allow_rules: Vec::new(),
+            auto_mode_deny_rules: Vec::new(),
+            auto_mode_environment: Vec::new(),
+        }
+    }
+}
+
 impl Default for Settings {
     fn default() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -95,6 +133,7 @@ impl Default for Settings {
                 plugin_dir: config_dir.join("plugins"),
                 auto_update: true,
             },
+            safety: SafetySettings::default(),
         }
     }
 }
@@ -143,6 +182,11 @@ impl Settings {
             "streaming" => settings.api.streaming = value.parse().unwrap_or(true),
             "memory.enabled" => settings.memory.enabled = value.parse().unwrap_or(true),
             "voice.enabled" => settings.voice.enabled = value.parse().unwrap_or(false),
+            "safety.auto_mode" => settings.safety.auto_mode = value.parse().unwrap_or(false),
+            "safety.auto_mode_circuit_breaker" => {
+                settings.safety.auto_mode_circuit_breaker = value.parse().unwrap_or(false)
+            }
+            "safety.auto_mode_stage" => settings.safety.auto_mode_stage = value.to_string(),
             _ => return Err(anyhow::anyhow!("Unknown setting: {}", key)),
         }
 
@@ -156,4 +200,8 @@ impl Settings {
         settings.save()?;
         Ok(())
     }
+}
+
+fn default_auto_mode_stage() -> String {
+    "both".to_string()
 }

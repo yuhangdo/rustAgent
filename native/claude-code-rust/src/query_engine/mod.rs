@@ -757,6 +757,59 @@ impl AgentEventHandler for PersistingEventHandler<'_> {
                     )
                     .await;
             }
+            AgentEvent::AutoModeEntered {
+                previous_mode,
+                model,
+                stripped_dangerous_rules,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::AutoModeEntered {
+                            previous_mode: previous_mode.clone(),
+                            model: model.clone(),
+                            stripped_dangerous_rules: stripped_dangerous_rules.clone(),
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::AutoModeExited {
+                restored_dangerous_rules,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::AutoModeExited {
+                            restored_dangerous_rules: restored_dangerous_rules.clone(),
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::AutoModeDecisionRecorded {
+                tool_name,
+                behavior,
+                reason,
+                stage,
+                unavailable,
+                transcript_too_long,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::AutoModeDecisionRecorded {
+                            tool_name: tool_name.clone(),
+                            behavior: *behavior,
+                            reason: reason.clone(),
+                            stage: *stage,
+                            unavailable: *unavailable,
+                            transcript_too_long: *transcript_too_long,
+                        },
+                    )
+                    .await;
+            }
             AgentEvent::PlanModeEntered { previous_mode } => {
                 let _ = self
                     .transcript_store

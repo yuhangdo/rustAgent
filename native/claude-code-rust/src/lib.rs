@@ -18,6 +18,7 @@
 pub mod advanced;
 pub mod agent_runtime;
 pub mod api;
+pub mod auto_mode;
 pub mod cli;
 pub mod compact;
 pub mod config;
@@ -56,6 +57,13 @@ pub use agent_runtime::{
     AgentEvent, AgentExecutionOutcome, AgentExecutionRequest, AgentExecutionResult, AgentRuntime,
 };
 pub use api::{AnthropicClient, ApiClient, ChatMessage};
+pub use auto_mode::{
+    auto_mode_system_prompt, auto_mode_tool_denial_payload, model_supports_auto_mode,
+    restore_dangerous_permissions, strip_dangerous_permissions_for_auto_mode,
+    AutoModeClassifierRunMode, AutoModeClassifierStage, AutoModeConfig, AutoModeDecision,
+    AutoModeDecisionBehavior, AutoModePromptKind, AutoModeRuleStripResult, AutoModeSession,
+    AutoModeStatus, AutoModeToolCall, PermissionRule, PermissionRuleBehavior,
+};
 pub use cli::Cli;
 pub use compact::{
     full_compact, micro_compact_history, session_memory_compact, CompactDirection, CompactResult,

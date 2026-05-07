@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::api::{ChatMessage, ToolCall, ToolCallFunction};
+use crate::auto_mode::{
+    AutoModeClassifierStage, AutoModeDecision, AutoModeDecisionBehavior, AutoModeStatus,
+};
 use crate::plan_mode::{AllowedPrompt, PlanMode, PlanModeStatus};
 use crate::prompting::PromptSection;
 use crate::query_engine::budget::BudgetState;
@@ -60,6 +63,22 @@ pub enum TranscriptEvent {
     QuickPathDowngraded {
         reason: String,
         executed_tools: usize,
+    },
+    AutoModeEntered {
+        previous_mode: String,
+        model: String,
+        stripped_dangerous_rules: Vec<String>,
+    },
+    AutoModeExited {
+        restored_dangerous_rules: Vec<String>,
+    },
+    AutoModeDecisionRecorded {
+        tool_name: String,
+        behavior: AutoModeDecisionBehavior,
+        reason: String,
+        stage: Option<AutoModeClassifierStage>,
+        unavailable: bool,
+        transcript_too_long: bool,
     },
     PlanModeEntered {
         previous_mode: String,
@@ -213,6 +232,8 @@ pub struct TranscriptReplay {
     pub additional_system_sections: Vec<PromptSection>,
     pub additional_user_context_sections: Vec<PromptSection>,
     pub plan_mode_status: PlanModeStatus,
+    pub auto_mode_status: AutoModeStatus,
+    pub auto_mode_decisions: Vec<AutoModeDecision>,
     pub last_run_status: QueryRunStatus,
     pub last_error: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
@@ -233,6 +254,8 @@ impl Default for TranscriptReplay {
             additional_system_sections: Vec::new(),
             additional_user_context_sections: Vec::new(),
             plan_mode_status: PlanModeStatus::default(),
+            auto_mode_status: AutoModeStatus::default(),
+            auto_mode_decisions: Vec::new(),
             last_run_status: QueryRunStatus::Idle,
             last_error: None,
             created_at: None,
@@ -419,6 +442,40 @@ impl TranscriptStore {
                 TranscriptEvent::MemorySurfaced { .. }
                 | TranscriptEvent::QuickPathSelected { .. }
                 | TranscriptEvent::QuickPathDowngraded { .. } => {}
+                TranscriptEvent::AutoModeEntered {
+                    previous_mode,
+                    model,
+                    stripped_dangerous_rules,
+                } => {
+                    replay.auto_mode_status.active = true;
+                    replay.auto_mode_status.previous_mode = Some(previous_mode.clone());
+                    replay.auto_mode_status.model = model.clone();
+                    replay.auto_mode_status.model_supported = true;
+                    replay.auto_mode_status.circuit_broken = false;
+                    replay.auto_mode_status.stripped_dangerous_rules =
+                        stripped_dangerous_rules.clone();
+                }
+                TranscriptEvent::AutoModeExited { .. } => {
+                    replay.auto_mode_status.active = false;
+                }
+                TranscriptEvent::AutoModeDecisionRecorded {
+                    tool_name: _,
+                    behavior,
+                    reason,
+                    stage,
+                    unavailable,
+                    transcript_too_long,
+                } => {
+                    replay.auto_mode_decisions.push(AutoModeDecision {
+                        behavior: *behavior,
+                        should_block: *behavior != AutoModeDecisionBehavior::Allow,
+                        reason: reason.clone(),
+                        unavailable: *unavailable,
+                        transcript_too_long: *transcript_too_long,
+                        model: replay.auto_mode_status.model.clone(),
+                        stage: *stage,
+                    });
+                }
                 TranscriptEvent::PlanModeEntered { previous_mode } => {
                     replay.plan_mode_status.mode = PlanMode::Plan;
                     replay.plan_mode_status.previous_mode = Some(previous_mode.clone());
