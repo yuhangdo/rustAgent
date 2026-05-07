@@ -79,6 +79,8 @@ pub enum BridgeEventType {
     MemorySurfaced,
     QuickPathSelected,
     QuickPathDowngraded,
+    PlanModeEntered,
+    PlanModeAwaitingApproval,
     ReasoningSummary,
     ToolCallRequested,
     ToolCallCompleted,
@@ -680,6 +682,39 @@ impl AgentEventHandler for BridgeEventSink {
                             "{} After {} tool(s), the run moved to the slow path.",
                             trim_for_event(&reason, 220),
                             executed_tools
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::PlanModeEntered { previous_mode } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::PlanModeEntered,
+                        "Plan Mode Entered",
+                        format!(
+                            "Previous permission mode `{}` was saved; write tools are now hidden.",
+                            previous_mode
+                        ),
+                    )
+                    .await;
+            }
+            AgentEvent::PlanModeExited {
+                plan_file_path,
+                allowed_prompts,
+                awaiting_approval,
+                ..
+            } => {
+                self.server
+                    .append_event(
+                        &self.run_id,
+                        BridgeEventType::PlanModeAwaitingApproval,
+                        "Plan Awaiting Approval",
+                        format!(
+                            "Plan persisted at `{}`; awaiting approval: {}; allowed prompts requested: {}.",
+                            plan_file_path,
+                            awaiting_approval,
+                            allowed_prompts.len()
                         ),
                     )
                     .await;

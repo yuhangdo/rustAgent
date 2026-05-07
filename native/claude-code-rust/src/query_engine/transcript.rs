@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::api::{ChatMessage, ToolCall, ToolCallFunction};
+use crate::plan_mode::{AllowedPrompt, PlanMode, PlanModeStatus};
 use crate::prompting::PromptSection;
 use crate::query_engine::budget::BudgetState;
 use crate::query_engine::cost::SessionUsageTotals;
@@ -59,6 +60,15 @@ pub enum TranscriptEvent {
     QuickPathDowngraded {
         reason: String,
         executed_tools: usize,
+    },
+    PlanModeEntered {
+        previous_mode: String,
+    },
+    PlanModeExited {
+        plan_file_path: String,
+        allowed_prompts: Vec<AllowedPrompt>,
+        awaiting_approval: bool,
+        plan_was_edited: bool,
     },
     TokenBudgetWarning {
         active_tokens: usize,
@@ -202,6 +212,7 @@ pub struct TranscriptReplay {
     pub token_budget_state: Option<TokenBudgetState>,
     pub additional_system_sections: Vec<PromptSection>,
     pub additional_user_context_sections: Vec<PromptSection>,
+    pub plan_mode_status: PlanModeStatus,
     pub last_run_status: QueryRunStatus,
     pub last_error: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
@@ -221,6 +232,7 @@ impl Default for TranscriptReplay {
             token_budget_state: None,
             additional_system_sections: Vec::new(),
             additional_user_context_sections: Vec::new(),
+            plan_mode_status: PlanModeStatus::default(),
             last_run_status: QueryRunStatus::Idle,
             last_error: None,
             created_at: None,
@@ -407,6 +419,30 @@ impl TranscriptStore {
                 TranscriptEvent::MemorySurfaced { .. }
                 | TranscriptEvent::QuickPathSelected { .. }
                 | TranscriptEvent::QuickPathDowngraded { .. } => {}
+                TranscriptEvent::PlanModeEntered { previous_mode } => {
+                    replay.plan_mode_status.mode = PlanMode::Plan;
+                    replay.plan_mode_status.previous_mode = Some(previous_mode.clone());
+                    replay.plan_mode_status.awaiting_approval = false;
+                    replay.plan_mode_status.allowed_prompts.clear();
+                    replay.plan_mode_status.plan_file_path = PathBuf::new();
+                    replay.plan_mode_status.plan_was_edited = false;
+                }
+                TranscriptEvent::PlanModeExited {
+                    plan_file_path,
+                    allowed_prompts,
+                    awaiting_approval,
+                    plan_was_edited,
+                } => {
+                    replay.plan_mode_status.mode = if *awaiting_approval {
+                        PlanMode::AwaitingApproval
+                    } else {
+                        PlanMode::Default
+                    };
+                    replay.plan_mode_status.plan_file_path = PathBuf::from(plan_file_path);
+                    replay.plan_mode_status.allowed_prompts = allowed_prompts.clone();
+                    replay.plan_mode_status.awaiting_approval = *awaiting_approval;
+                    replay.plan_mode_status.plan_was_edited = *plan_was_edited;
+                }
                 TranscriptEvent::TokenBudgetWarning {
                     active_tokens,
                     effective_budget_tokens,

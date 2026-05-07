@@ -27,6 +27,7 @@ pub mod memory;
 #[cfg(feature = "mobile-bridge")]
 pub mod mobile_bridge;
 pub mod orchestration;
+pub mod plan_mode;
 pub mod plugins;
 pub mod prompting;
 pub mod query_engine;
@@ -77,6 +78,11 @@ pub use orchestration::{
     MailboxMessageMode, SwarmHookEvent, SwarmHookKind, SwarmTask, SwarmTaskPriority,
     SwarmTaskStatus, TaskNotification, Teammate, TeammateRole, TeammateStatus,
 };
+pub use plan_mode::{
+    apply_plan_mode_tool_filter, is_tool_allowed_in_plan_mode, is_tool_visible_for_mode,
+    plan_mode_system_prompt, AllowedPrompt, PlanMode, PlanModeSession, PlanModeStatus,
+    ENTER_PLAN_MODE_TOOL, EXIT_PLAN_MODE_TOOL,
+};
 pub use plugins::PluginManager;
 pub use prompting::{
     ProjectMemoryCandidate, ProjectMemorySelectionQuery, ProjectMemorySelector, PromptAssembly,
@@ -103,7 +109,7 @@ pub use token_budget::{
     MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES, ONE_MILLION_CONTEXT_TOKENS, POST_COMPACT_TOKEN_BUDGET,
     SLOT_RETRY_MAX_TOKENS, WARNING_THRESHOLD_BUFFER_TOKENS,
 };
-pub use tools::ToolRegistry;
+pub use tools::{ToolAccess, ToolRegistry};
 pub use voice::VoiceInput;
 
 // Feature-gated re-exports

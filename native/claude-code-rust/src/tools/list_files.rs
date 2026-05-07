@@ -1,6 +1,6 @@
 //! List Files Tool
 
-use super::{Tool, ToolError, ToolOutput};
+use super::{Tool, ToolAccess, ToolError, ToolOutput};
 use async_trait::async_trait;
 use serde_json;
 use std::path::Path;
@@ -102,5 +102,9 @@ impl Tool for ListFilesTool {
             content: results.join("\n"),
             metadata: std::collections::HashMap::new(),
         })
+    }
+
+    fn access(&self) -> ToolAccess {
+        ToolAccess::ReadOnly
     }
 }

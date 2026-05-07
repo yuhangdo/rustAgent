@@ -24,6 +24,14 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolAccess {
+    ReadOnly,
+    Write,
+    Internal,
+}
+
 /// Tool trait for all tools
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -38,6 +46,11 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool
     async fn execute(&self, input: serde_json::Value) -> Result<ToolOutput, ToolError>;
+
+    /// Tool access class used by safety policies such as Plan Mode.
+    fn access(&self) -> ToolAccess {
+        ToolAccess::Write
+    }
 
     /// Convert to OpenAI-compatible function definition
     fn tool_definition(&self) -> serde_json::Value {
@@ -107,6 +120,13 @@ impl ToolRegistry {
     /// Register a tool
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_string(), tool);
+    }
+
+    /// Register Plan Mode transition tools bound to a shared Plan Mode session.
+    pub fn register_plan_mode_tools(&mut self, session: crate::plan_mode::PlanModeSession) {
+        for tool in crate::plan_mode::plan_mode_tools(session) {
+            self.register(tool);
+        }
     }
 
     /// Get a tool by name

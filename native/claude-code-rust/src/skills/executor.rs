@@ -23,8 +23,7 @@ impl SkillExecutor {
         let mut named_params = std::collections::HashMap::new();
         let mut flags = std::collections::HashMap::new();
 
-        // Simple parsing logic
-        let tokens: Vec<&str> = input.split_whitespace().collect();
+        let tokens = tokenize_skill_input(input);
 
         for token in tokens {
             if token.starts_with("--") {
@@ -135,4 +134,50 @@ impl SkillExecutor {
 
         Ok(help)
     }
+}
+
+fn tokenize_skill_input(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+
+        match quote {
+            Some(active_quote) if ch == active_quote => {
+                quote = None;
+            }
+            Some(_) => current.push(ch),
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+            }
+            None if ch.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(ch),
+        }
+    }
+
+    if escaped {
+        current.push('\\');
+    }
+
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    tokens
 }

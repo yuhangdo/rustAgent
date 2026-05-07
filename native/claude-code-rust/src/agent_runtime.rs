@@ -23,6 +23,10 @@ use crate::config::Settings;
 use crate::fast_path::{
     ExecutionModeHint, QuickPathExecution, QuickPathExecutor, QuickPathRequest,
 };
+use crate::plan_mode::{
+    is_tool_visible_for_mode, AllowedPrompt, PlanMode, PlanModeSession, PlanModeStatus,
+    EXIT_PLAN_MODE_TOOL,
+};
 use crate::prompting::{
     ProjectMemorySelectionQuery, ProjectMemorySelector, PromptAssembly, PromptBudget,
     PromptBuildRequest, PromptBuilder, PromptCacheScope, PromptSection,
@@ -121,6 +125,15 @@ pub enum AgentEvent {
         reason: String,
         executed_tools: usize,
     },
+    PlanModeEntered {
+        previous_mode: String,
+    },
+    PlanModeExited {
+        plan_file_path: String,
+        allowed_prompts: Vec<AllowedPrompt>,
+        awaiting_approval: bool,
+        plan_was_edited: bool,
+    },
     TokenBudgetWarning {
         active_tokens: usize,
         warning_threshold: usize,
@@ -202,6 +215,7 @@ pub struct AgentRuntime {
     working_dir: PathBuf,
     memory_enabled: bool,
     auto_memory_directory: Option<PathBuf>,
+    plan_mode_session: PlanModeSession,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -239,11 +253,13 @@ impl AgentRuntime {
         Self::new_with_tool_registry(settings, ToolRegistry::new())
     }
 
-    pub fn new_with_tool_registry(settings: Settings, tool_registry: ToolRegistry) -> Self {
+    pub fn new_with_tool_registry(settings: Settings, mut tool_registry: ToolRegistry) -> Self {
         let max_response_tokens = settings.api.max_tokens;
         let working_dir = settings.working_dir.clone();
         let memory_enabled = settings.memory.enabled;
         let auto_memory_directory = settings.memory.auto_memory_directory.clone();
+        let plan_mode_session = PlanModeSession::new(working_dir.clone());
+        tool_registry.register_plan_mode_tools(plan_mode_session.clone());
         Self {
             client: ApiClient::new(settings),
             tool_registry,
@@ -251,6 +267,7 @@ impl AgentRuntime {
             working_dir,
             memory_enabled,
             auto_memory_directory,
+            plan_mode_session,
         }
     }
 
@@ -283,6 +300,9 @@ impl AgentRuntime {
             additional_user_context_sections,
             allowed_tool_names,
         } = request;
+        self.plan_mode_session
+            .set_workspace_root(workspace_root.clone())
+            .await;
         let mut latest_reasoning = String::new();
         let mut usage_records = Vec::new();
         let max_iterations = if requested_max_iterations == 0 {
@@ -296,7 +316,6 @@ impl AgentRuntime {
                 .map(|tool| tool.to_ascii_lowercase())
                 .collect::<HashSet<_>>()
         });
-        let tool_definitions = self.tool_definitions(allowed_tool_names.as_ref());
         let memory_selector = ApiProjectMemorySelector {
             client: &self.client,
         };
@@ -388,9 +407,16 @@ impl AgentRuntime {
                 return Ok(AgentExecutionOutcome::Cancelled);
             }
 
+            let plan_mode_status = self.plan_mode_session.status().await;
+            let tool_definitions =
+                self.tool_definitions(allowed_tool_names.as_ref(), &plan_mode_status);
+            let turn_system_prompt = self
+                .plan_mode_session
+                .decorated_system_prompt(&system_prompt)
+                .await;
             let prepared_turn = self
                 .prepare_turn_context(
-                    &system_prompt,
+                    &turn_system_prompt,
                     &workspace_root,
                     &tool_definitions,
                     &mut prompt_state,
@@ -501,11 +527,20 @@ impl AgentRuntime {
                     }
 
                     let tool_name = tool_call.function.name.clone();
-                    if !tool_is_allowed(&tool_name, allowed_tool_names.as_ref()) {
+                    let plan_mode_status = self.plan_mode_session.status().await;
+                    if !self.tool_is_allowed_for_status(
+                        &tool_name,
+                        allowed_tool_names.as_ref(),
+                        &plan_mode_status,
+                    ) {
                         let error_payload = json!({
                             "success": false,
-                            "error": format!("Tool not allowed in this agent mode: {}", tool_name),
-                            "code": "tool_not_allowed",
+                            "error": format!("Tool not allowed in the current agent safety mode: {}", tool_name),
+                            "code": if plan_mode_status.mode == PlanMode::Plan {
+                                "plan_mode_tool_not_allowed"
+                            } else {
+                                "tool_not_allowed"
+                            },
                         });
                         prompt_state.history.push(ChatMessage::tool(
                             tool_call.id.clone(),
@@ -543,6 +578,10 @@ impl AgentRuntime {
                     {
                         Ok(output) => {
                             let tool_content = tool_output_message(&output);
+                            let stop_for_plan_approval =
+                                should_stop_for_plan_approval(&tool_name, &output);
+                            self.emit_plan_mode_event_if_needed(&tool_name, &output, event_handler)
+                                .await;
                             prompt_state.history.push(ChatMessage::tool(
                                 tool_call.id.clone(),
                                 tool_content.clone(),
@@ -555,6 +594,23 @@ impl AgentRuntime {
                                     output_preview: summarize_text(&tool_content, 400),
                                 })
                                 .await;
+                            if stop_for_plan_approval {
+                                let answer = plan_approval_answer(&output);
+                                event_handler
+                                    .on_event(AgentEvent::FinalAnswer {
+                                        answer: answer.clone(),
+                                    })
+                                    .await;
+                                return Ok(AgentExecutionOutcome::Completed(
+                                    AgentExecutionResult {
+                                        reasoning: latest_reasoning,
+                                        answer,
+                                        iterations: iteration + 1,
+                                        usage_records,
+                                        token_budget_state: Some(token_budget_state.clone()),
+                                    },
+                                ));
+                            }
                         }
                         Err(error) => {
                             let error_payload = json!({
@@ -613,13 +669,94 @@ impl AgentRuntime {
     fn tool_definitions(
         &self,
         allowed_tool_names: Option<&HashSet<String>>,
+        plan_mode_status: &PlanModeStatus,
     ) -> Vec<ToolDefinition> {
         self.tool_registry
             .list()
             .into_iter()
             .filter(|tool| tool_is_allowed(tool.name(), allowed_tool_names))
+            .filter(|tool| is_tool_visible_for_mode(tool.name(), tool.access(), plan_mode_status))
             .map(|tool| ToolDefinition::new(tool.name(), tool.description(), tool.input_schema()))
             .collect()
+    }
+
+    fn tool_is_allowed_for_status(
+        &self,
+        tool_name: &str,
+        allowed_tool_names: Option<&HashSet<String>>,
+        plan_mode_status: &PlanModeStatus,
+    ) -> bool {
+        if !tool_is_allowed(tool_name, allowed_tool_names) {
+            return false;
+        }
+
+        let access = self
+            .tool_registry
+            .get(tool_name)
+            .map(|tool| tool.access())
+            .unwrap_or(crate::tools::ToolAccess::Write);
+        is_tool_visible_for_mode(tool_name, access, plan_mode_status)
+    }
+
+    async fn emit_plan_mode_event_if_needed(
+        &self,
+        tool_name: &str,
+        output: &ToolOutput,
+        event_handler: &dyn AgentEventHandler,
+    ) {
+        let Some(action) = output
+            .metadata
+            .get("plan_mode_action")
+            .and_then(Value::as_str)
+        else {
+            return;
+        };
+
+        match action {
+            "entered" => {
+                let previous_mode = output
+                    .metadata
+                    .get("previous_mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("default")
+                    .to_string();
+                event_handler
+                    .on_event(AgentEvent::PlanModeEntered { previous_mode })
+                    .await;
+            }
+            "exited" if tool_name == EXIT_PLAN_MODE_TOOL => {
+                let plan_file_path = output
+                    .metadata
+                    .get("plan_file_path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let awaiting_approval = output
+                    .metadata
+                    .get("awaiting_approval")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let plan_was_edited = output
+                    .metadata
+                    .get("plan_was_edited")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let allowed_prompts = output
+                    .metadata
+                    .get("allowed_prompts")
+                    .and_then(|value| serde_json::from_value(value.clone()).ok())
+                    .unwrap_or_default();
+                event_handler
+                    .on_event(AgentEvent::PlanModeExited {
+                        plan_file_path,
+                        allowed_prompts,
+                        awaiting_approval,
+                        plan_was_edited,
+                    })
+                    .await;
+            }
+            _ => {}
+        }
     }
 
     fn context_window_tokens(&self) -> usize {
@@ -1383,6 +1520,27 @@ fn tool_is_allowed(tool_name: &str, allowed_tool_names: Option<&HashSet<String>>
     allowed_tool_names
         .map(|allowed| allowed.contains(&tool_name.to_ascii_lowercase()))
         .unwrap_or(true)
+}
+
+fn should_stop_for_plan_approval(tool_name: &str, output: &ToolOutput) -> bool {
+    tool_name == EXIT_PLAN_MODE_TOOL
+        && output
+            .metadata
+            .get("awaiting_approval")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn plan_approval_answer(output: &ToolOutput) -> String {
+    let plan_file_path = output
+        .metadata
+        .get("plan_file_path")
+        .and_then(Value::as_str)
+        .unwrap_or("the persisted plan file");
+    format!(
+        "Plan Mode is awaiting approval. Review the editable plan at `{}` and approve it before implementation continues.",
+        plan_file_path
+    )
 }
 
 fn normalize_tool_input(tool_name: &str, mut input: Value, workspace_root: &Path) -> Value {

@@ -757,6 +757,36 @@ impl AgentEventHandler for PersistingEventHandler<'_> {
                     )
                     .await;
             }
+            AgentEvent::PlanModeEntered { previous_mode } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::PlanModeEntered {
+                            previous_mode: previous_mode.clone(),
+                        },
+                    )
+                    .await;
+            }
+            AgentEvent::PlanModeExited {
+                plan_file_path,
+                allowed_prompts,
+                awaiting_approval,
+                plan_was_edited,
+            } => {
+                let _ = self
+                    .transcript_store
+                    .append_with_turn(
+                        Some(self.turn_id.clone()),
+                        &TranscriptEvent::PlanModeExited {
+                            plan_file_path: plan_file_path.clone(),
+                            allowed_prompts: allowed_prompts.clone(),
+                            awaiting_approval: *awaiting_approval,
+                            plan_was_edited: *plan_was_edited,
+                        },
+                    )
+                    .await;
+            }
             AgentEvent::TokenBudgetWarning {
                 active_tokens,
                 warning_threshold,

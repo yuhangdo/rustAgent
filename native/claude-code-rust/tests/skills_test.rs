@@ -1,6 +1,8 @@
 //! Tests for Skills Framework
 
-use claude_code_rs::skills::{SkillRegistry, SkillExecutor, SkillContext, SkillCategory, BuiltinSkills};
+use claude_code_rs::skills::{
+    BuiltinSkills, SkillCategory, SkillContext, SkillExecutor, SkillRegistry,
+};
 use std::sync::Arc;
 
 #[test]
@@ -15,7 +17,7 @@ fn test_skill_registration() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(Arc::from(skill), categories);
     }
 
     // Should have 5 skills now
@@ -35,7 +37,7 @@ fn test_skill_search() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(Arc::from(skill), categories);
     }
 
     // Search for "commit"
@@ -49,7 +51,7 @@ fn test_skill_categories() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(Arc::from(skill), categories);
     }
 
     // Check Git category
@@ -67,7 +69,7 @@ async fn test_skill_executor() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(Arc::from(skill), categories);
     }
 
     let registry_arc = Arc::new(registry);
@@ -95,7 +97,7 @@ fn test_skill_help() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(Arc::from(skill), categories);
     }
 
     let registry_arc = Arc::new(registry);
@@ -115,7 +117,7 @@ fn test_skill_parameter_parsing() {
 
     // Register built-in skills
     for (skill, categories) in BuiltinSkills::all() {
-        registry.register(Arc::new(skill), categories);
+        registry.register(Arc::from(skill), categories);
     }
 
     let registry_arc = Arc::new(registry);
@@ -123,7 +125,10 @@ fn test_skill_parameter_parsing() {
 
     // Parse input with flags
     let params = executor.parse_input("--message=\"test message\" --verbose");
-    assert_eq!(params.named_params.get("message"), Some(&"test message".to_string()));
+    assert_eq!(
+        params.named_params.get("message"),
+        Some(&"test message".to_string())
+    );
     assert!(params.flags.contains_key("verbose"));
 
     // Parse input with positional args
