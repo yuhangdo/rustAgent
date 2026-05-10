@@ -70,6 +70,9 @@ impl Cli {
             Some(super::Commands::Skills { action }) => {
                 self.run_skills(action).await?;
             }
+            Some(super::Commands::Ultraplan { prompt, remote }) => {
+                self.run_ultraplan(state, prompt.clone(), *remote).await?;
+            }
             None => {
                 self.run_repl(state, None)?;
             }
@@ -122,6 +125,7 @@ impl Cli {
             }
         };
 
+        let prompt = maybe_enhance_ultraplan_prompt(&state, &prompt).await?;
         let messages = vec![crate::api::ChatMessage::user(&prompt)];
         let base_url = client.get_base_url().to_string();
         let model = client.get_model().to_string();
@@ -643,5 +647,53 @@ impl Cli {
             }
         }
         Ok(())
+    }
+
+    async fn run_ultraplan(
+        &self,
+        state: crate::state::AppState,
+        prompt: String,
+        remote: bool,
+    ) -> anyhow::Result<()> {
+        let route = crate::ultraplan::UltraplanRoute {
+            launch_mode: if remote {
+                crate::ultraplan::UltraplanLaunchMode::Remote
+            } else {
+                crate::ultraplan::UltraplanLaunchMode::Local
+            },
+            original_input: format!("/ultraplan {}", prompt).trim().to_string(),
+            cleaned_prompt: prompt.trim().to_string(),
+            explicit_command: true,
+        };
+        let session = crate::plan_mode::PlanModeSession::new(state.settings.working_dir.clone());
+        let handler = crate::ultraplan::UltraplanCommandHandler::new(session);
+        let result = handler.execute(route).await?;
+
+        println!("Ultraplan mode: {}", result.launch_mode.as_str());
+        if let Some(remote_session_id) = result.remote_session_id {
+            println!("CCR session: {}", remote_session_id);
+        }
+        println!("{}", result.system_prompt.trim());
+        Ok(())
+    }
+}
+
+async fn maybe_enhance_ultraplan_prompt(
+    state: &crate::state::AppState,
+    prompt: &str,
+) -> anyhow::Result<String> {
+    match crate::ultraplan::process_ultraplan_input(prompt).action {
+        crate::ultraplan::UltraplanInputAction::Normal => Ok(prompt.to_string()),
+        crate::ultraplan::UltraplanInputAction::Route(route) => {
+            let session =
+                crate::plan_mode::PlanModeSession::new(state.settings.working_dir.clone());
+            let handler = crate::ultraplan::UltraplanCommandHandler::new(session);
+            let result = handler.execute(route.clone()).await?;
+            Ok(format!(
+                "{}\n\nUser request: {}",
+                result.system_prompt.trim(),
+                route.cleaned_prompt
+            ))
+        }
     }
 }

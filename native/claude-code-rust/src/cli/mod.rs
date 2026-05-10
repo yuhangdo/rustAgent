@@ -147,6 +147,16 @@ pub enum Commands {
         action: SkillsCommands,
     },
 
+    /// Enter enhanced Ultraplan mode
+    Ultraplan {
+        /// Planning prompt
+        #[arg(short, long, default_value = "")]
+        prompt: String,
+        /// Use remote CCR session mode
+        #[arg(long)]
+        remote: bool,
+    },
+
     /// Run stress tests
     StressTest {
         /// Number of concurrent requests

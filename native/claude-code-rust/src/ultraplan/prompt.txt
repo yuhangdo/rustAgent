@@ -1,0 +1,1 @@
+ULTRAPLAN enhanced planning is active. Stay read-only, inspect deeply, identify risks and dependencies, then produce a deep implementation plan with concrete steps, tests, rollback notes, and explicit approval boundaries before any code changes.

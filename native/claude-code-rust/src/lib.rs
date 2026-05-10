@@ -41,6 +41,7 @@ pub mod sub_agents;
 pub mod terminal;
 pub mod token_budget;
 pub mod tools;
+pub mod ultraplan;
 pub mod utils;
 pub mod voice;
 
@@ -90,7 +91,7 @@ pub use orchestration::{
 pub use plan_mode::{
     apply_plan_mode_tool_filter, is_tool_allowed_in_plan_mode, is_tool_visible_for_mode,
     plan_mode_system_prompt, AllowedPrompt, PlanMode, PlanModeSession, PlanModeStatus,
-    ENTER_PLAN_MODE_TOOL, EXIT_PLAN_MODE_TOOL,
+    UltraplanPlanStatus, ENTER_PLAN_MODE_TOOL, EXIT_PLAN_MODE_TOOL,
 };
 pub use plugins::PluginManager;
 pub use prompting::{
@@ -126,6 +127,14 @@ pub use token_budget::{
     SLOT_RETRY_MAX_TOKENS, WARNING_THRESHOLD_BUFFER_TOKENS,
 };
 pub use tools::{ToolAccess, ToolRegistry};
+pub use ultraplan::{
+    find_ultraplan_trigger_positions, highlight_ultraplan_keyword, is_ultraplan_feature_enabled,
+    process_ultraplan_input, render_rainbow_ultraplan_highlight, replace_ultraplan_keyword,
+    ultraplan_system_prompt, CcrSession, CcrSessionState, ExitPlanModeScanResult,
+    ExitPlanModeScanner, UltraplanCommandHandler, UltraplanCommandResult, UltraplanHighlightSpan,
+    UltraplanInputAction, UltraplanInputDecision, UltraplanLaunchMode, UltraplanRoute,
+    UltraplanTriggerPosition, ULTRAPLAN_COMMAND, ULTRAPLAN_FEATURE_FLAG, ULTRAPLAN_PROMPT,
+};
 pub use voice::VoiceInput;
 
 // Feature-gated re-exports

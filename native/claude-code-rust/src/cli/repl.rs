@@ -5,6 +5,7 @@
 use crate::api::{build_chat_completions_url, ApiClient, ChatMessage};
 use crate::cli::ui;
 use crate::state::AppState;
+use crate::ultraplan::{process_ultraplan_input, UltraplanCommandHandler, UltraplanInputAction};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 
@@ -41,6 +42,10 @@ impl Repl {
             let input = input.trim();
 
             if input.is_empty() {
+                continue;
+            }
+
+            if self.maybe_process_ultraplan(input)? {
                 continue;
             }
 
@@ -156,6 +161,29 @@ impl Repl {
         }
 
         Ok(())
+    }
+
+    fn maybe_process_ultraplan(&mut self, input: &str) -> anyhow::Result<bool> {
+        let decision = process_ultraplan_input(input);
+        let UltraplanInputAction::Route(route) = decision.action else {
+            return Ok(false);
+        };
+
+        let session =
+            crate::plan_mode::PlanModeSession::new(self.state.settings.working_dir.clone());
+        let handler = UltraplanCommandHandler::new(session);
+        let result = futures::executor::block_on(handler.execute(route.clone()))?;
+        ui::print_success(&format!(
+            "Ultraplan {} mode active",
+            result.launch_mode.as_str()
+        ));
+        let enhanced_prompt = format!(
+            "{}\n\nUser request: {}",
+            result.system_prompt.trim(),
+            route.cleaned_prompt
+        );
+        self.process_input(&enhanced_prompt)?;
+        Ok(true)
     }
 
     fn print_status(&self) {

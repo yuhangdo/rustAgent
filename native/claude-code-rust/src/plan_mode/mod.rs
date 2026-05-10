@@ -42,6 +42,17 @@ pub struct PlanModeStatus {
     pub allowed_prompts: Vec<AllowedPrompt>,
     pub awaiting_approval: bool,
     pub plan_was_edited: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ultraplan: Option<UltraplanPlanStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UltraplanPlanStatus {
+    pub active: bool,
+    pub launch_mode: String,
+    pub original_input: String,
+    pub cleaned_prompt: String,
+    pub remote_session_id: Option<String>,
 }
 
 impl Default for PlanModeStatus {
@@ -53,6 +64,7 @@ impl Default for PlanModeStatus {
             allowed_prompts: Vec::new(),
             awaiting_approval: false,
             plan_was_edited: false,
+            ultraplan: None,
         }
     }
 }
@@ -100,6 +112,34 @@ impl PlanModeSession {
             allowed_prompts: Vec::new(),
             awaiting_approval: false,
             plan_was_edited: false,
+            ultraplan: None,
+        };
+        Ok(guard.status.clone())
+    }
+
+    pub async fn enter_ultraplan(
+        &self,
+        previous_mode: impl Into<String>,
+        launch_mode: impl Into<String>,
+        original_input: impl Into<String>,
+        cleaned_prompt: impl Into<String>,
+        remote_session_id: Option<String>,
+    ) -> Result<PlanModeStatus> {
+        let mut guard = self.inner.write().await;
+        guard.status = PlanModeStatus {
+            mode: PlanMode::Plan,
+            previous_mode: Some(previous_mode.into()),
+            plan_file_path: PathBuf::new(),
+            allowed_prompts: Vec::new(),
+            awaiting_approval: false,
+            plan_was_edited: false,
+            ultraplan: Some(UltraplanPlanStatus {
+                active: true,
+                launch_mode: launch_mode.into(),
+                original_input: original_input.into(),
+                cleaned_prompt: cleaned_prompt.into(),
+                remote_session_id,
+            }),
         };
         Ok(guard.status.clone())
     }
@@ -133,6 +173,9 @@ impl PlanModeSession {
         guard.status.allowed_prompts = allowed_prompts;
         guard.status.awaiting_approval = true;
         guard.status.plan_was_edited = false;
+        if let Some(ultraplan) = guard.status.ultraplan.as_mut() {
+            ultraplan.active = false;
+        }
         Ok(guard.status.clone())
     }
 
@@ -182,6 +225,15 @@ pub fn is_tool_visible_for_mode(
 }
 
 pub fn plan_mode_system_prompt(base_system_prompt: &str, status: &PlanModeStatus) -> String {
+    if status
+        .ultraplan
+        .as_ref()
+        .map(|ultraplan| ultraplan.active)
+        .unwrap_or(false)
+    {
+        return crate::ultraplan::ultraplan_system_prompt(base_system_prompt, status);
+    }
+
     match status.mode {
         PlanMode::Plan => format!(
             "{base_system_prompt}\n\nPlan Mode is active.\n- You are in a read-only exploration phase.\n- Use only read-only tools to inspect the workspace.\n- Do not edit files, run mutating commands, create commits, or otherwise change state.\n- When you have a concrete implementation plan, call `{EXIT_PLAN_MODE_TOOL}` with the plan text and optional `allowed_prompts` entries such as {{\"tool\":\"Bash\",\"prompt\":\"run tests\"}}.\n- After submitting the plan, stop and wait for approval before implementation."

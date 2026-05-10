@@ -483,6 +483,7 @@ impl TranscriptStore {
                     replay.plan_mode_status.allowed_prompts.clear();
                     replay.plan_mode_status.plan_file_path = PathBuf::new();
                     replay.plan_mode_status.plan_was_edited = false;
+                    replay.plan_mode_status.ultraplan = None;
                 }
                 TranscriptEvent::PlanModeExited {
                     plan_file_path,
