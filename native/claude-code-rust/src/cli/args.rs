@@ -296,9 +296,12 @@ impl Cli {
                 println!("Memories imported from: {}", input.display());
             }
             super::MemoryCommands::Dream => {
-                println!("Running memory consolidation (dream)...");
-                manager.consolidate().await?;
-                println!("Memory consolidation completed");
+                let state = Arc::new(RwLock::new(crate::state::AppState::default()));
+                let service = crate::services::AutoDreamService::new(state, None);
+                println!("Running AutoDream memory organization (/dream)...");
+                let report = service.force_consolidation().await;
+                report?;
+                println!("AutoDream memory organization completed");
             }
             super::MemoryCommands::AutoDream => {
                 let state = Arc::new(RwLock::new(crate::state::AppState::default()));

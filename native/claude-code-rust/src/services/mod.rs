@@ -21,7 +21,7 @@ pub mod team_memory_sync;
 pub mod voice;
 
 pub use agents::{AgentDefinition, AgentSession, AgentStatus, AgentType, AgentsService};
-pub use auto_dream::{AutoDreamConfig, AutoDreamService, AutoDreamStatus};
+pub use auto_dream::{AutoDreamConfig, AutoDreamRunReport, AutoDreamService, AutoDreamStatus};
 pub use magic_docs::{MagicDocHeader, MagicDocInfo, MagicDocsConfig, MagicDocsService};
 pub use plugin_marketplace::{MarketplacePlugin, Plugin, PluginConfig, PluginMarketplaceService};
 pub use stress_tests::{run_stress_test, StressTestResult, StressTestRunner};

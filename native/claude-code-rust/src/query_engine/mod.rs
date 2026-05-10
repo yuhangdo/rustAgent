@@ -94,6 +94,8 @@ impl QueryEngine {
         event_handler: &dyn AgentEventHandler,
         cancellation: &dyn AgentCancellation,
     ) -> Result<QuerySessionSnapshot> {
+        let auto_dream_settings = request.settings.clone();
+        let auto_dream_workspace = request.workspace_root.clone();
         self.ensure_session_exists(
             &request.session_id,
             &request.workspace_root,
@@ -274,10 +276,12 @@ impl QueryEngine {
                         },
                     )
                     .await?;
+                self.spawn_auto_dream_after_turn(auto_dream_settings, auto_dream_workspace);
                 return Err(error);
             }
         }
 
+        self.spawn_auto_dream_after_turn(auto_dream_settings, auto_dream_workspace);
         self.resume_session(&request.session_id).await
     }
 
@@ -626,6 +630,24 @@ impl QueryEngine {
 
     pub fn base_root(&self) -> &Path {
         &self.root
+    }
+
+    fn spawn_auto_dream_after_turn(&self, settings: Settings, workspace_root: PathBuf) {
+        if !settings.memory.enabled {
+            return;
+        }
+
+        let sessions_dir = self.root.clone();
+        tokio::spawn(async move {
+            let service = crate::services::AutoDreamService::for_query_context(
+                settings,
+                workspace_root,
+                sessions_dir,
+            );
+            if let Err(error) = service.check_and_run().await {
+                tracing::debug!("AutoDream background check failed: {}", error);
+            }
+        });
     }
 }
 

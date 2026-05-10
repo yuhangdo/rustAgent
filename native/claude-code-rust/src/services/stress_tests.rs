@@ -163,6 +163,7 @@ impl StressTestRunner {
                 min_hours: 24,
                 min_sessions: 5,
                 enabled: true,
+                ..AutoDreamConfig::default()
             }),
         );
 
