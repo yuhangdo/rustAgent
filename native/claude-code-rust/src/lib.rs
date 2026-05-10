@@ -37,6 +37,7 @@ pub mod session;
 pub mod skills;
 pub mod state;
 pub mod streaming;
+pub mod sub_agents;
 pub mod terminal;
 pub mod token_budget;
 pub mod tools;
@@ -108,6 +109,13 @@ pub use skills::{
     SkillResult,
 };
 pub use state::AppState;
+pub use sub_agents::{
+    render_agent_catalog, render_sub_agent_notification, sub_agent_tools,
+    sub_agent_tools_with_manager, AgentIsolation, AgentLaunchRequest, AgentPermissionMode,
+    SendMessageRequest, SubAgentDefinition, SubAgentManager, SubAgentManagerConfig,
+    SubAgentNotification, SubAgentRegistry, SubAgentRunRequest, SubAgentRunResult, SubAgentRunner,
+    SubAgentStatus,
+};
 pub use token_budget::{
     effective_budget, evaluate_budget_decision, model_capability, provider_kind_for_base_url,
     resolve_context_window, rough_count_message, rough_count_messages, rough_count_text,

@@ -286,6 +286,7 @@ impl AgentRuntime {
             auto_mode_config_from_settings(&settings),
         );
         tool_registry.register_plan_mode_tools(plan_mode_session.clone());
+        tool_registry.register_sub_agent_tools(settings.clone());
         Self {
             client: ApiClient::new(settings),
             tool_registry,
@@ -451,6 +452,19 @@ impl AgentRuntime {
         for iteration in 0..max_iterations {
             if cancellation.is_cancelled() {
                 return Ok(AgentExecutionOutcome::Cancelled);
+            }
+
+            let sub_agent_notifications = self.tool_registry.drain_sub_agent_notifications().await;
+            if !sub_agent_notifications.is_empty() {
+                let rendered = sub_agent_notifications
+                    .iter()
+                    .map(crate::sub_agents::render_sub_agent_notification)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                prompt_state.history.push(ChatMessage::user(format!(
+                    "<sub-agent-notifications>\n{}\n</sub-agent-notifications>",
+                    rendered
+                )));
             }
 
             let plan_mode_status = self.plan_mode_session.status().await;

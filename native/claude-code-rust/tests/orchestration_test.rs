@@ -13,6 +13,7 @@ fn coordinator_policy_restricts_tools_and_renders_prompt() {
         vec![
             "agent",
             "send_message",
+            "task_output",
             "task_stop",
             "subscribe_pr_activity"
         ]
@@ -24,6 +25,7 @@ fn coordinator_policy_restricts_tools_and_renders_prompt() {
     assert!(prompt.contains("Base prompt"));
     assert!(prompt.contains("Coordinator Mode"));
     assert!(prompt.contains("must understand the task before delegation"));
+    assert!(prompt.contains("TaskOutput"));
     assert!(prompt.contains("/tmp/scratchpad"));
 }
 

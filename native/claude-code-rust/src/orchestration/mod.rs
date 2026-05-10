@@ -12,11 +12,6 @@ use tokio::fs;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
-use crate::agent_runtime::{
-    AgentExecutionOutcome, AgentExecutionRequest, AgentRuntime, NoopAgentCancellation,
-    NoopAgentEventHandler,
-};
-use crate::api::ChatMessage;
 use crate::config::Settings;
 use crate::tools::{Tool, ToolError, ToolOutput};
 
@@ -30,6 +25,7 @@ const LOCK_RETRY_DELAY: Duration = Duration::from_millis(20);
 const COORDINATOR_TOOLS: &[&str] = &[
     "agent",
     "send_message",
+    "task_output",
     "task_stop",
     "subscribe_pr_activity",
 ];
@@ -38,6 +34,7 @@ const INTERNAL_WORKER_TOOLS: &[&str] = &[
     "team_create",
     "team_delete",
     "send_message",
+    "task_output",
     "task_stop",
     "synthetic_output",
 ];
@@ -116,7 +113,7 @@ pub fn coordinator_system_prompt(base_prompt: &str, scratchpad_path: Option<&str
 Coordinator Mode\n\
 - You are the Coordinator. You plan, delegate, monitor, and synthesize.\n\
 - You do not edit files, read files, run commands, or do implementation work yourself.\n\
-- Available tools are limited to Agent, SendMessage, and TaskStop.\n\
+- Available tools are limited to Agent, SendMessage, TaskOutput, and TaskStop.\n\
 - You must understand the task before delegation. Give workers precise instructions with concrete files, constraints, and success criteria.\n\
 - Do not delegate vague understanding. Synthesize worker results into one coherent answer for the user.\n\
 - Workers report completion through <task-notification> messages; use <task-id> when sending follow-up instructions.{scratchpad}"
@@ -149,13 +146,12 @@ Worker Mode\n\
 }
 
 pub fn coordinator_tools(settings: Settings) -> Vec<Box<dyn Tool>> {
-    let state = std::sync::Arc::new(CoordinatorToolState::new(settings));
-    vec![
-        Box::new(CoordinatorAgentTool::new(state.clone())),
-        Box::new(SendMessageTool::new(state.clone())),
-        Box::new(TaskStopTool::new(state.clone())),
-        Box::new(SubscribePrActivityTool::new(state)),
-    ]
+    let state = std::sync::Arc::new(CoordinatorToolState::new());
+    let mut tools = crate::sub_agents::sub_agent_tools(settings)
+        .map(|(_, tools)| tools)
+        .unwrap_or_default();
+    tools.push(Box::new(SubscribePrActivityTool::new(state)));
+    tools
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -182,276 +178,15 @@ pub fn render_task_notification(notification: &TaskNotification) -> String {
     )
 }
 
-#[derive(Debug, Clone)]
-struct WorkerRecord {
-    task_id: String,
-    title: String,
-    history: Vec<ChatMessage>,
-    status: String,
-    total_tokens: usize,
-    tool_uses: usize,
-}
-
 struct CoordinatorToolState {
-    settings: Settings,
-    workers: RwLock<std::collections::HashMap<String, WorkerRecord>>,
     pr_subscriptions: RwLock<Vec<String>>,
 }
 
 impl CoordinatorToolState {
-    fn new(settings: Settings) -> Self {
+    fn new() -> Self {
         Self {
-            settings,
-            workers: RwLock::new(std::collections::HashMap::new()),
             pr_subscriptions: RwLock::new(Vec::new()),
         }
-    }
-}
-
-struct CoordinatorAgentTool {
-    state: std::sync::Arc<CoordinatorToolState>,
-}
-
-impl CoordinatorAgentTool {
-    fn new(state: std::sync::Arc<CoordinatorToolState>) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl Tool for CoordinatorAgentTool {
-    fn name(&self) -> &str {
-        "agent"
-    }
-
-    fn description(&self) -> &str {
-        "Start a worker agent for a concrete delegated assignment and return a task notification"
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "subagent_type": {
-                    "type": "string",
-                    "description": "Must be worker",
-                    "enum": ["worker"]
-                },
-                "description": {
-                    "type": "string",
-                    "description": "Short worker task title"
-                },
-                "prompt": {
-                    "type": "string",
-                    "description": "Precise instructions for the worker"
-                }
-            },
-            "required": ["subagent_type", "description", "prompt"]
-        })
-    }
-
-    async fn execute(&self, input: Value) -> Result<ToolOutput, ToolError> {
-        let subagent_type = required_str(&input, "subagent_type")?;
-        if subagent_type != "worker" {
-            return Err(tool_error(
-                "invalid_subagent_type",
-                "Coordinator mode only supports subagent_type=\"worker\"",
-            ));
-        }
-        let title = required_str(&input, "description")?.to_string();
-        let prompt = required_str(&input, "prompt")?.to_string();
-        let task_id = format!("agent-{}", uuid::Uuid::new_v4().simple());
-
-        let run = run_worker(
-            &self.state.settings,
-            vec![ChatMessage::user(prompt.clone())],
-        )
-        .await;
-        let (status, result, total_tokens, tool_uses, history) = match run {
-            Ok((answer, total_tokens, history)) => ("completed", answer, total_tokens, 0, history),
-            Err(error) => (
-                "failed",
-                error.to_string(),
-                0,
-                0,
-                vec![ChatMessage::user(prompt.clone())],
-            ),
-        };
-
-        self.state.workers.write().await.insert(
-            task_id.clone(),
-            WorkerRecord {
-                task_id: task_id.clone(),
-                title: title.clone(),
-                history,
-                status: status.to_string(),
-                total_tokens,
-                tool_uses,
-            },
-        );
-
-        let notification = TaskNotification {
-            task_id,
-            status: status.to_string(),
-            summary: format!("Agent \"{}\" {}", title, status),
-            result,
-            total_tokens,
-            tool_uses,
-            duration_ms: 0,
-        };
-        Ok(xml_tool_output(render_task_notification(&notification)))
-    }
-}
-
-struct SendMessageTool {
-    state: std::sync::Arc<CoordinatorToolState>,
-}
-
-impl SendMessageTool {
-    fn new(state: std::sync::Arc<CoordinatorToolState>) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl Tool for SendMessageTool {
-    fn name(&self) -> &str {
-        "send_message"
-    }
-
-    fn description(&self) -> &str {
-        "Send follow-up instructions to an existing worker by task id"
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Worker task id from <task-id>"
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Follow-up instructions"
-                }
-            },
-            "required": ["to", "message"]
-        })
-    }
-
-    async fn execute(&self, input: Value) -> Result<ToolOutput, ToolError> {
-        let task_id = required_str(&input, "to")?.to_string();
-        let message = required_str(&input, "message")?.to_string();
-        let existing = {
-            let workers = self.state.workers.read().await;
-            workers.get(&task_id).cloned()
-        }
-        .ok_or_else(|| tool_error("worker_not_found", format!("Unknown worker: {}", task_id)))?;
-
-        if existing.status == "killed" {
-            return Err(tool_error(
-                "worker_killed",
-                "Cannot message a killed worker",
-            ));
-        }
-
-        let mut history = existing.history.clone();
-        history.push(ChatMessage::user(message));
-        let run = run_worker(&self.state.settings, history.clone()).await;
-        let (status, result, total_tokens, updated_history) = match run {
-            Ok((answer, total_tokens, updated_history)) => (
-                "completed",
-                answer,
-                existing.total_tokens + total_tokens,
-                updated_history,
-            ),
-            Err(error) => ("failed", error.to_string(), existing.total_tokens, history),
-        };
-
-        self.state.workers.write().await.insert(
-            task_id.clone(),
-            WorkerRecord {
-                task_id: task_id.clone(),
-                title: existing.title.clone(),
-                history: updated_history,
-                status: status.to_string(),
-                total_tokens,
-                tool_uses: existing.tool_uses,
-            },
-        );
-
-        let notification = TaskNotification {
-            task_id,
-            status: status.to_string(),
-            summary: format!("Agent \"{}\" {}", existing.title, status),
-            result,
-            total_tokens,
-            tool_uses: existing.tool_uses,
-            duration_ms: 0,
-        };
-        Ok(xml_tool_output(render_task_notification(&notification)))
-    }
-}
-
-struct TaskStopTool {
-    state: std::sync::Arc<CoordinatorToolState>,
-}
-
-impl TaskStopTool {
-    fn new(state: std::sync::Arc<CoordinatorToolState>) -> Self {
-        Self { state }
-    }
-}
-
-#[async_trait]
-impl Tool for TaskStopTool {
-    fn name(&self) -> &str {
-        "task_stop"
-    }
-
-    fn description(&self) -> &str {
-        "Mark a worker task as killed so the coordinator can redirect work"
-    }
-
-    fn input_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "Worker task id from <task-id>"
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Why the worker is being stopped"
-                }
-            },
-            "required": ["task_id"]
-        })
-    }
-
-    async fn execute(&self, input: Value) -> Result<ToolOutput, ToolError> {
-        let task_id = required_str(&input, "task_id")?.to_string();
-        let reason = input
-            .get("reason")
-            .and_then(Value::as_str)
-            .unwrap_or("Stopped by coordinator");
-        let mut workers = self.state.workers.write().await;
-        let worker = workers.get_mut(&task_id).ok_or_else(|| {
-            tool_error("worker_not_found", format!("Unknown worker: {}", task_id))
-        })?;
-        worker.status = "killed".to_string();
-        let notification = TaskNotification {
-            task_id: worker.task_id.clone(),
-            status: "killed".to_string(),
-            summary: format!("Agent \"{}\" killed", worker.title),
-            result: reason.to_string(),
-            total_tokens: worker.total_tokens,
-            tool_uses: worker.tool_uses,
-            duration_ms: 0,
-        };
-        Ok(xml_tool_output(render_task_notification(&notification)))
     }
 }
 
@@ -512,65 +247,12 @@ impl Tool for SubscribePrActivityTool {
     }
 }
 
-async fn run_worker(
-    settings: &Settings,
-    history: Vec<ChatMessage>,
-) -> Result<(String, usize, Vec<ChatMessage>)> {
-    let worker_tools = worker_allowed_tool_names(is_simple_worker_mode_enabled());
-    let system_prompt =
-        worker_system_prompt("You are a project worker agent.", &worker_tools, None);
-    let runtime = AgentRuntime::new(settings.clone());
-    let outcome = runtime
-        .execute(
-            AgentExecutionRequest {
-                system_prompt,
-                history: history.clone(),
-                workspace_root: settings.working_dir.clone(),
-                already_surfaced_memory_paths: Vec::new(),
-                max_iterations: 8,
-                execution_mode_hint: crate::fast_path::ExecutionModeHint::Auto,
-                token_budget_state: None,
-                additional_system_sections: Vec::new(),
-                additional_user_context_sections: Vec::new(),
-                allowed_tool_names: Some(worker_tools),
-            },
-            &NoopAgentEventHandler,
-            &NoopAgentCancellation,
-        )
-        .await?;
-
-    match outcome {
-        AgentExecutionOutcome::Completed(result) => {
-            let mut updated_history = history;
-            updated_history.push(ChatMessage::assistant(result.answer.clone()));
-            Ok((
-                result.answer,
-                result
-                    .usage_records
-                    .iter()
-                    .map(|usage| usage.total_tokens)
-                    .sum(),
-                updated_history,
-            ))
-        }
-        AgentExecutionOutcome::Cancelled => Err(anyhow!("worker_cancelled")),
-    }
-}
-
 fn required_str<'a>(input: &'a Value, name: &str) -> Result<&'a str, ToolError> {
     input
         .get(name)
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| tool_error(format!("missing_{}", name), format!("{} is required", name)))
-}
-
-fn xml_tool_output(content: String) -> ToolOutput {
-    ToolOutput {
-        output_type: "xml".to_string(),
-        content,
-        metadata: std::collections::HashMap::new(),
-    }
 }
 
 fn json_tool_output(content: Value) -> ToolOutput {

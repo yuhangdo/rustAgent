@@ -89,6 +89,8 @@ pub struct ToolError {
 pub struct ToolRegistry {
     /// Registered tools
     tools: HashMap<String, Box<dyn Tool>>,
+    /// Shared sub-agent task manager, if sub-agent tools are registered.
+    sub_agent_manager: Option<crate::sub_agents::SubAgentManager>,
 }
 
 impl ToolRegistry {
@@ -96,6 +98,7 @@ impl ToolRegistry {
     pub fn empty() -> Self {
         Self {
             tools: HashMap::new(),
+            sub_agent_manager: None,
         }
     }
 
@@ -126,6 +129,48 @@ impl ToolRegistry {
     pub fn register_plan_mode_tools(&mut self, session: crate::plan_mode::PlanModeSession) {
         for tool in crate::plan_mode::plan_mode_tools(session) {
             self.register(tool);
+        }
+    }
+
+    /// Register the general sub-agent tools bound to one shared manager.
+    pub fn register_sub_agent_tools(&mut self, settings: crate::config::Settings) {
+        if self.sub_agent_manager.is_some() {
+            return;
+        }
+        match crate::sub_agents::sub_agent_tools(settings) {
+            Ok((manager, tools)) => {
+                for tool in tools {
+                    self.register(tool);
+                }
+                self.sub_agent_manager = Some(manager);
+            }
+            Err(error) => {
+                tracing::warn!("failed to register sub-agent tools: {}", error);
+            }
+        }
+    }
+
+    /// Register sub-agent tools with an externally-owned manager.
+    pub fn register_sub_agent_tools_with_manager(
+        &mut self,
+        manager: crate::sub_agents::SubAgentManager,
+    ) {
+        if self.sub_agent_manager.is_some() {
+            return;
+        }
+        for tool in crate::sub_agents::sub_agent_tools_with_manager(manager.clone()) {
+            self.register(tool);
+        }
+        self.sub_agent_manager = Some(manager);
+    }
+
+    /// Drain background sub-agent notifications for the next model turn.
+    pub async fn drain_sub_agent_notifications(
+        &self,
+    ) -> Vec<crate::sub_agents::SubAgentNotification> {
+        match &self.sub_agent_manager {
+            Some(manager) => manager.drain_notifications().await,
+            None => Vec::new(),
         }
     }
 
